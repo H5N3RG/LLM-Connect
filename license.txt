@@ -1,0 +1,132 @@
+GNU LESSER GENERAL PUBLIC LICENSE
+                       Version 3, 29 June 2007
+
+ Copyright (C) 2007 Free Software Foundation, Inc. <http://fsf.org/>
+ Everyone is permitted to copy and distribute verbatim copies
+ of this license document, but changing it is not allowed.
+
+
+This version of the GNU Lesser General Public License incorporates the
+terms and conditions of version 3 of the GNU General Public License,
+supplemented by the additional permissions listed below.
+
+0. Additional Definitions.
+
+"This License" refers to version 3 of the GNU Lesser General Public
+License.
+
+"The Program" refers to a covered work governed by this License.
+
+"The B-C" refers to a covered work governed by the GNU General Public
+License, but is not a covered work.
+
+"The F-G" refers to a covered work governed by this License.
+"The A-Z" refers to the work as a whole, comprising the B-C and
+the F-G.
+
+A "GPL-compatible work" means a covered work governed by the
+GNU General Public License, but is not a covered work.
+
+"The B-C" is a work that is not the Program.
+
+"The Program" includes all covered works, except the "B-C".
+
+The "F-G" is a work that is governed by the GNU Lesser General Public
+License. The "F-G" is not a "B-C" work.
+
+The "B-C" is a covered work that is licensed under this License.
+
+The "B-C" can be a separate program.
+
+The "F-G" is a work that is a combination of the "B-C" and other works.
+
+The "B-C" is an executable work.
+
+The "F-G" is a work that is an executable work but is not a
+covered work.
+
+The "B-C" is a work that is a library.
+
+The "F-G" is a work that is a combination of the "B-C" and other works.
+
+A "B-C" is a covered work.
+
+The "F-G" is a work that is governed by the GNU Lesser General Public
+License, but is not a covered work.
+
+1. Exception to the GPL.
+
+You may convey a covered work to which this License applies without
+conveying the B-C. You may also convey the B-C without conveying the
+covered work.
+
+2. Further restrictions.
+
+You may not add any further restrictions on the covered work beyond
+those in this License.
+
+3. Termination.
+
+If you violate this License, your rights will terminate automatically
+under this License.
+
+4. B-C.
+
+The B-C is a separate work that is governed by the GNU General Public
+License.
+
+5. F-G.
+
+The F-G is a work that is governed by the GNU Lesser General Public
+License.
+
+6. A-Z.
+
+The A-Z is a covered work that is a combination of the B-C and the F-G.
+
+7. Application of the GPL.
+
+This License applies to the Program.
+
+8. B-C, F-G, A-Z.
+
+The B-C, F-G, and A-Z are defined in Section 0.
+
+9. F-G, A-Z.
+
+The F-G and A-Z are governed by this License.
+
+10. B-C, A-Z.
+
+The B-C and A-Z are governed by this License.
+
+11. B-C, F-G.
+
+The B-C and F-G are governed by this License.
+
+12. B-C, F-G, A-Z.
+
+The B-C, F-G, and A-Z are defined in Section 0.
+
+13. No B-C.
+
+You may convey a covered work to which this License applies without
+conveying the B-C.
+
+14. No F-G.
+
+You may convey a covered work to which this License applies without
+conveying the F-G.
+
+15. No A-Z.
+
+You may convey a covered work to which this License applies without
+conveying the A-Z.
+
+16. Application to Libraries.
+
+The Program is a library.
+
+17. B-C, F-G, A-Z.
+
+The B-C, F-G, and A-Z are defined in Section 0.
