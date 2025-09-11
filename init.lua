@@ -1,10 +1,11 @@
 -- ===========================================================================
---  LLM Connect Init v0.7.4
+--  LLM Connect Init v0.7.5
 --  author: H5N3RG
 --  license: LGPL-3.0-or-later
+--  Fix: max_tokens type handling, fully configurable, robust JSON
 -- ===========================================================================
 
-local core = core -- just in case
+local core = core
 
 -- Load HTTP API
 local http = core.request_http_api()
@@ -14,10 +15,16 @@ if not http then
 end
 
 -- === Load settings from menu / settingtypes.txt ===
-local max_tokens_type = core.settings:get_bool("llm_max_tokens_integer") and "integer" or "float"
-local api_key         = core.settings:get("llm_api_key") or ""
-local api_url         = core.settings:get("llm_api_url") or ""
-local model_name      = core.settings:get("llm_model") or ""
+local api_key    = core.settings:get("llm_api_key") or ""
+local api_url    = core.settings:get("llm_api_url") or ""
+local model_name = core.settings:get("llm_model") or ""
+
+-- max_tokens type: default integer, override via settings
+local setting_val = core.settings:get_bool("llm_max_tokens_integer")
+local max_tokens_type = "integer"
+if setting_val == false then
+    max_tokens_type = "float"
+end
 
 -- Storage for conversation history per player
 local history = {}
@@ -244,25 +251,23 @@ core.register_chatcommand("llm", {
 
         for _,msg in ipairs(player_history) do table.insert(messages,msg) end
 
-        -- === Determine max_tokens value and log it ===
+        -- === max_tokens handling with final JSON fix ===
         local max_tokens_value = 2000
-        if max_tokens_type=="integer" then
+        if max_tokens_type == "integer" then
             max_tokens_value = math.floor(max_tokens_value)
         else
-            max_tokens_value = max_tokens_value + 0.0
+            max_tokens_value = tonumber(max_tokens_value)  -- float, no +0.0
         end
 
-        -- Debug output
-        core.log("action", "[llm_connect DEBUG] max_tokens_type = " .. max_tokens_type)
-        core.log("action", "[llm_connect DEBUG] max_tokens_value = " .. tostring(max_tokens_value))
-
-        -- Write JSON
         local body = core.write_json({ model=model_name, messages=messages, max_tokens=max_tokens_value })
 
-        -- Force integer in JSON string if needed
-        if max_tokens_type=="integer" then
+        -- Force integer in JSON string if needed (important for Go backends)
+        if max_tokens_type == "integer" then
             body = body:gsub('"max_tokens"%s*:%s*(%d+)%.0', '"max_tokens": %1')
         end
+
+        core.log("action", "[llm_connect DEBUG] max_tokens_type = " .. max_tokens_type)
+        core.log("action", "[llm_connect DEBUG] max_tokens_value = " .. tostring(max_tokens_value))
 
         -- Send HTTP request
         http.fetch({
