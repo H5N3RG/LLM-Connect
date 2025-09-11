@@ -1,0 +1,18 @@
+# ===========================================================================
+# LLM Connect - Luanti/Minetest mod settings
+# ===========================================================================
+# Configure the LLM connection and behavior in the in-game menu
+# Internal name, (Label), Type, Default, [min max for int/float]
+# ===========================================================================
+
+# Determines whether max_tokens is sent as integer (true) or float (false)
+llm_max_tokens_integer   (Send max_tokens as integer) bool true
+
+# Your API key for the LLM endpoint
+llm_api_key              (API Key) string ""
+
+# The URL of the OpenAI-compatible LLM endpoint
+llm_api_url              (API URL) string ""
+
+# The model to use for the LLM (leave empty for none)
+llm_model                (Model) string ""
