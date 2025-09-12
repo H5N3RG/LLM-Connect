@@ -22,7 +22,7 @@ This enables the LLM to provide highly specific and helpful answers, e.g., on cr
 
 - Built with Minetest's HTTP API for sending requests to an external, OpenAI-compatible endpoint. <!-- cite: 44 -->
 - Structured to be understandable and extendable for new contributors.  
-- Version: **0.7.5**
+- Version: **0.7.6**
 
 ## Requirements
 
