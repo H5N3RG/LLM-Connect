@@ -1,8 +1,9 @@
 -- ===========================================================================
---  LLM Connect Init v0.7.5
+--  LLM Connect Init v0.7.6
 --  author: H5N3RG
 --  license: LGPL-3.0-or-later
 --  Fix: max_tokens type handling, fully configurable, robust JSON
+--  Enhancement: Dynamic metadata handling, player name in prompts
 -- ===========================================================================
 
 local core = core
@@ -29,7 +30,7 @@ end
 -- Storage for conversation history per player
 local history = {}
 local max_history = { ["default"] = 10 }
-local player_context_sent = {}
+local metadata_cache = {} -- Cache for metadata to detect changes
 
 -- Helper functions
 local function get_history(name)
@@ -74,7 +75,7 @@ local function read_file_content(filepath)
     return content
 end
 
-local system_prompt_content = read_file_content(mod_dir .. "/system_prompt.txt")
+local system_prompt_content = read_file_content(mod_dir .. "/system_prompt.txt") or ""
 
 -- === Privileges ===
 core.register_privilege("llm", { description = "Can chat with the LLM model", give_to_singleplayer=true, give_to_admin=true })
@@ -112,7 +113,21 @@ function meta_data_functions.gather_context(player_name)
     context.player = get_username(player_name)
     context.installed_mods = get_installed_mods()
     context.server_settings = get_server_settings()
+    -- Add dynamic player data (e.g., position)
+    local player = core.get_player_by_name(player_name)
+    if player then
+        local pos = player:get_pos()
+        context.player_position = string.format("x=%.2f, y=%.2f, z=%.2f", pos.x, pos.y, pos.z)
+    else
+        context.player_position = "Unknown"
+    end
     return context
+end
+
+-- Compute a simple hash for metadata to detect changes
+local function compute_metadata_hash(context)
+    local str = context.player .. context.server_settings.server_name .. context.server_settings.worldpath .. table.concat(context.installed_mods, ",")
+    return core.sha1(str)
 end
 
 -- === Chat Commands ===
@@ -200,8 +215,8 @@ core.register_chatcommand("llm_reset", {
     privs = {llm=true},
     func = function(name)
         history[name] = {}
-        player_context_sent[name] = false
-        core.chat_send_player(name,"[LLM] Conversation reset.")
+        metadata_cache[name] = nil -- Reset metadata cache
+        core.chat_send_player(name,"[LLM] Conversation and metadata reset.")
     end,
 })
 
@@ -219,36 +234,44 @@ core.register_chatcommand("llm", {
 
         local player_history = get_history(name)
         local max_hist = get_max_history(name)
-        table.insert(player_history,{role="user",content=param})
+        -- Add player name to prompt for clarity
+        local user_prompt = "Player " .. name .. ": " .. param
+        table.insert(player_history,{role="user",content=user_prompt})
         while #player_history>max_hist do table.remove(player_history,1) end
 
-        local messages = {}
-        if system_prompt_content then
-            table.insert(messages,{role="system",content=system_prompt_content})
-        end
+        -- Gather and cache metadata
+        local context_data = meta_data_functions.gather_context(name)
+        local current_metadata_hash = compute_metadata_hash(context_data)
+        local needs_metadata_update = not metadata_cache[name] or metadata_cache[name].hash ~= current_metadata_hash
 
-        if not player_context_sent[name] then
-            local context_data = meta_data_functions.gather_context(name)
+        local messages = {}
+        -- Build dynamic system prompt with metadata
+        local dynamic_system_prompt = system_prompt_content
+        if needs_metadata_update then
             local mods_list_str = table.concat(context_data.installed_mods,", ")
             if #context_data.installed_mods>10 then mods_list_str="(More than 10 installed mods: "..#context_data.installed_mods..")" end
             local materials_context_str = ""
             if llm_materials_context and llm_materials_context.get_available_materials then
                 materials_context_str = "\n\n--- AVAILABLE MATERIALS ---\n" .. llm_materials_context.get_available_materials()
             end
-            local metadata_string = "Server Information:\n" ..
-                "  Player: " .. context_data.player .. "\n" ..
-                "  Server Name: " .. context_data.server_settings.server_name .. "\n" ..
-                "  Server Description: " .. context_data.server_settings.server_description .. "\n" ..
-                "  MOTD: " .. context_data.server_settings.motd .. "\n" ..
-                "  Game: " .. context_data.server_settings.game_name .. " (" .. context_data.server_settings.gameid .. ")\n" ..
-                "  Mapgen: " .. context_data.server_settings.mapgen .. "\n" ..
-                "  World Path: " .. context_data.server_settings.worldpath .. "\n" ..
-                "  Port: " .. context_data.server_settings.port .. "\n" ..
-                "  Installed Mods (" .. #context_data.installed_mods .. "): " .. mods_list_str .. "\n" .. materials_context_str
-            table.insert(messages,{role="user",content="--- METADATA ---\n"..metadata_string})
-            player_context_sent[name] = true
+            local metadata_string = "\n\n--- METADATA ---\n" ..
+                "Player: " .. context_data.player .. "\n" ..
+                "Player Position: " .. context_data.player_position .. "\n" ..
+                "Server Name: " .. context_data.server_settings.server_name .. "\n" ..
+                "Server Description: " .. context_data.server_settings.server_description .. "\n" ..
+                "MOTD: " .. context_data.server_settings.motd .. "\n" ..
+                "Game: " .. context_data.server_settings.game_name .. " (" .. context_data.server_settings.gameid .. ")\n" ..
+                "Mapgen: " .. context_data.server_settings.mapgen .. "\n" ..
+                "World Path: " .. context_data.server_settings.worldpath .. "\n" ..
+                "Port: " .. context_data.server_settings.port .. "\n" ..
+                "Installed Mods (" .. #context_data.installed_mods .. "): " .. mods_list_str .. "\n" .. materials_context_str
+            dynamic_system_prompt = system_prompt_content .. metadata_string
+            metadata_cache[name] = { hash = current_metadata_hash, metadata = metadata_string }
+        else
+            dynamic_system_prompt = system_prompt_content .. metadata_cache[name].metadata
         end
 
+        table.insert(messages,{role="system",content=dynamic_system_prompt})
         for _,msg in ipairs(player_history) do table.insert(messages,msg) end
 
         -- === max_tokens handling with final JSON fix ===
@@ -256,7 +279,7 @@ core.register_chatcommand("llm", {
         if max_tokens_type == "integer" then
             max_tokens_value = math.floor(max_tokens_value)
         else
-            max_tokens_value = tonumber(max_tokens_value)  -- float, no +0.0
+            max_tokens_value = tonumber(max_tokens_value)
         end
 
         local body = core.write_json({ model=model_name, messages=messages, max_tokens=max_tokens_value })
