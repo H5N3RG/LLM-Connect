@@ -1,8 +1,9 @@
 -- ===========================================================================
---  LLM Connect Init v0.7.6
+--  LLM Connect Init v0.7.7
 --  author: H5N3RG
 --  license: LGPL-3.0-or-later
 --  Fix: max_tokens type handling, fully configurable, robust JSON
+--  Addet: metadata for ingame-commads
 --  Enhancement: Dynamic metadata handling, player name in prompts
 -- ===========================================================================
 
@@ -94,6 +95,24 @@ local function get_installed_mods()
     end
     return mods
 end
+
+-- NEUE FUNKTION: Befehle sammeln
+local function get_installed_commands()
+    local commands = {}
+    if core.chatcommands then
+        for name, cmd in pairs(core.chatcommands) do
+            if not name:match("^__builtin:") then
+                local desc = cmd.description or "No description"
+                table.insert(commands, "/" .. name .. " " .. (cmd.params or "") .. " - " .. desc)
+            end
+        end
+        table.sort(commands)
+    else
+        table.insert(commands, "Command list not available.")
+    end
+    return commands
+end
+
 local function get_server_settings()
     local settings = {
         server_name       = core.settings:get("server_name") or "Unnamed Server",
@@ -112,6 +131,7 @@ function meta_data_functions.gather_context(player_name)
     local context = {}
     context.player = get_username(player_name)
     context.installed_mods = get_installed_mods()
+    context.installed_commands = get_installed_commands() -- HINZUGEFÜGT
     context.server_settings = get_server_settings()
     -- Add dynamic player data (e.g., position)
     local player = core.get_player_by_name(player_name)
@@ -126,7 +146,7 @@ end
 
 -- Compute a simple hash for metadata to detect changes
 local function compute_metadata_hash(context)
-    local str = context.player .. context.server_settings.server_name .. context.server_settings.worldpath .. table.concat(context.installed_mods, ",")
+    local str = context.player .. context.server_settings.server_name .. context.server_settings.worldpath .. table.concat(context.installed_mods, ",") .. table.concat(context.installed_commands, ",") -- Hash aktualisiert
     return core.sha1(str)
 end
 
@@ -254,6 +274,9 @@ core.register_chatcommand("llm", {
             if llm_materials_context and llm_materials_context.get_available_materials then
                 materials_context_str = "\n\n--- AVAILABLE MATERIALS ---\n" .. llm_materials_context.get_available_materials()
             end
+            -- Befehlsliste hinzufügen
+            local commands_list_str = table.concat(context_data.installed_commands, "\n")
+
             local metadata_string = "\n\n--- METADATA ---\n" ..
                 "Player: " .. context_data.player .. "\n" ..
                 "Player Position: " .. context_data.player_position .. "\n" ..
@@ -264,7 +287,9 @@ core.register_chatcommand("llm", {
                 "Mapgen: " .. context_data.server_settings.mapgen .. "\n" ..
                 "World Path: " .. context_data.server_settings.worldpath .. "\n" ..
                 "Port: " .. context_data.server_settings.port .. "\n" ..
-                "Installed Mods (" .. #context_data.installed_mods .. "): " .. mods_list_str .. "\n" .. materials_context_str
+                "Installed Mods (" .. #context_data.installed_mods .. "): " .. mods_list_str .. "\n" ..
+                "Available Commands:\n" .. commands_list_str .. "\n" .. -- HINZUGEFÜGT
+                materials_context_str
             dynamic_system_prompt = system_prompt_content .. metadata_string
             metadata_cache[name] = { hash = current_metadata_hash, metadata = metadata_string }
         else
