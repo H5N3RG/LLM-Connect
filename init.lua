@@ -3,7 +3,7 @@
 --  author: H5N3RG
 --  license: LGPL-3.0-or-later
 --  Fix: max_tokens type handling, fully configurable, robust JSON
---  Addet: metadata for ingame-commads
+--  Added: metadata for ingame-commads
 --  Enhancement: Dynamic metadata handling, player name in prompts
 -- ===========================================================================
 
