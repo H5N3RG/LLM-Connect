@@ -1,10 +1,12 @@
 -- ===========================================================================
---  LLM Connect Init v0.7.7
+--  LLM Connect Init v0.7.8
 --  author: H5N3RG
 --  license: LGPL-3.0-or-later
 --  Fix: max_tokens type handling, fully configurable, robust JSON
 --  Added: metadata for ingame-commads
 --  Enhancement: Dynamic metadata handling, player name in prompts
+--  NEW: Automatic API endpoint completion for compatibility.
+--  UPDATE: Configurable context sending
 -- ===========================================================================
 
 local core = core
@@ -20,6 +22,50 @@ end
 local api_key    = core.settings:get("llm_api_key") or ""
 local api_url    = core.settings:get("llm_api_url") or ""
 local model_name = core.settings:get("llm_model") or ""
+
+-- NEW Context Settings
+local send_server_info = core.settings:get_bool("llm_context_send_server_info")
+local send_mod_list    = core.settings:get_bool("llm_context_send_mod_list")
+local send_commands    = core.settings:get_bool("llm_context_send_commands")
+local send_player_pos  = core.settings:get_bool("llm_context_send_player_pos")
+local send_materials   = core.settings:get_bool("llm_context_send_materials")
+
+-- NEW: Function to check and complete the API endpoint
+local function finalize_api_url(url)
+    if not url or url == "" then
+        return ""
+    end
+
+    -- 1. Remove trailing slash if present
+    local clean_url = url:gsub("/$", "")
+
+    -- Check if the URL contains a path component (everything after the host:port)
+    -- We assume any '/' after the protocol part (e.g., 'http://') or the host:port
+    -- indicates a user-defined path, which should not be overwritten.
+    -- Simple check: if the URL contains more than two slashes (e.g. 'http://host')
+    -- or if it contains any character after the host:port that is not part of the port number.
+
+    -- Attempt to find the end of the host/port part (first '/' after the protocol slashes)
+    local protocol_end = clean_url:find("://")
+    local host_end = 0
+
+    if protocol_end then
+        host_end = clean_url:find("/", protocol_end + 3) -- Find the first slash after '://'
+    end
+
+    -- If no further slash is found (host_end is nil), it means only the base address (host:port) is present.
+    if not host_end then
+        -- Append the default OpenAI-compatible path
+        return clean_url .. "/v1/chat/completions"
+    end
+
+    -- If a path is found, use the URL as is.
+    return url
+end
+
+-- Apply the auto-completion/finalization logic
+api_url = finalize_api_url(api_url)
+
 
 -- max_tokens type: default integer, override via settings
 local setting_val = core.settings:get_bool("llm_max_tokens_integer")
@@ -87,16 +133,18 @@ local meta_data_functions = {}
 local function get_username(player_name) return player_name or "Unknown Player" end
 local function get_installed_mods()
     local mods = {}
-    if core.get_mods then
-        for modname,_ in pairs(core.get_mods()) do table.insert(mods, modname) end
-        table.sort(mods)
+    -- NOTE: core.get_mods is undocumented. Using core.get_modnames (documented) instead.
+    if core.get_modnames then
+        -- core.get_modnames returns a table of mod names, already sorted alphabetically.
+        mods = core.get_modnames()
     else
-        table.insert(mods,"Mod list not available")
+        -- Fallback for extremely old versions
+        table.insert(mods,"Mod list not available (core.get_modnames missing)")
     end
     return mods
 end
 
--- NEUE FUNKTION: Befehle sammeln
+-- Function to collect chat commands
 local function get_installed_commands()
     local commands = {}
     if core.chatcommands then
@@ -131,7 +179,7 @@ function meta_data_functions.gather_context(player_name)
     local context = {}
     context.player = get_username(player_name)
     context.installed_mods = get_installed_mods()
-    context.installed_commands = get_installed_commands() -- HINZUGEFÜGT
+    context.installed_commands = get_installed_commands()
     context.server_settings = get_server_settings()
     -- Add dynamic player data (e.g., position)
     local player = core.get_player_by_name(player_name)
@@ -146,7 +194,13 @@ end
 
 -- Compute a simple hash for metadata to detect changes
 local function compute_metadata_hash(context)
-    local str = context.player .. context.server_settings.server_name .. context.server_settings.worldpath .. table.concat(context.installed_mods, ",") .. table.concat(context.installed_commands, ",") -- Hash aktualisiert
+    -- Hash calculation now depends on which fields are active to avoid unnecessary cache busts
+    local str = context.player
+    if send_server_info then str = str .. context.server_settings.server_name .. context.server_settings.worldpath end
+    if send_mod_list then str = str .. table.concat(context.installed_mods, ",") end
+    if send_commands then str = str .. table.concat(context.installed_commands, ",") end
+    if send_player_pos then str = str .. context.player_position end
+    -- Material context has its own hash in llm_materials_context.lua, so we don't include it here
     return core.sha1(str)
 end
 
@@ -160,9 +214,9 @@ core.register_chatcommand("llm_setkey", {
         local parts = string_split(param," ")
         if #parts==0 then return false,"Please provide API key!" end
         api_key = parts[1]
-        if parts[2] then api_url = parts[2] end
+        if parts[2] then api_url = finalize_api_url(parts[2]) end -- Apply finalization here too
         if parts[3] then model_name = parts[3] end
-        core.chat_send_player(name,"[LLM] API key, URL and model set.")
+        core.chat_send_player(name,"[LLM] API key, URL and model set. (URL auto-corrected if only host:port was provided.)")
         return true
     end,
 })
@@ -187,8 +241,8 @@ core.register_chatcommand("llm_set_endpoint", {
     func = function(name,param)
         if not core.check_player_privs(name,{llm_root=true}) then return false,"No permission!" end
         if param=="" then return false,"Provide URL!" end
-        api_url = param
-        core.chat_send_player(name,"[LLM] API endpoint set to "..api_url)
+        api_url = finalize_api_url(param) -- Apply finalization here
+        core.chat_send_player(name,"[LLM] API endpoint set to "..api_url.." (URL auto-corrected if only host:port was provided.)")
         return true
     end,
 })
@@ -268,28 +322,47 @@ core.register_chatcommand("llm", {
         -- Build dynamic system prompt with metadata
         local dynamic_system_prompt = system_prompt_content
         if needs_metadata_update then
-            local mods_list_str = table.concat(context_data.installed_mods,", ")
-            if #context_data.installed_mods>10 then mods_list_str="(More than 10 installed mods: "..#context_data.installed_mods..")" end
-            local materials_context_str = ""
-            if llm_materials_context and llm_materials_context.get_available_materials then
-                materials_context_str = "\n\n--- AVAILABLE MATERIALS ---\n" .. llm_materials_context.get_available_materials()
-            end
-            -- Befehlsliste hinzufügen
-            local commands_list_str = table.concat(context_data.installed_commands, "\n")
-
             local metadata_string = "\n\n--- METADATA ---\n" ..
-                "Player: " .. context_data.player .. "\n" ..
-                "Player Position: " .. context_data.player_position .. "\n" ..
-                "Server Name: " .. context_data.server_settings.server_name .. "\n" ..
-                "Server Description: " .. context_data.server_settings.server_description .. "\n" ..
-                "MOTD: " .. context_data.server_settings.motd .. "\n" ..
-                "Game: " .. context_data.server_settings.game_name .. " (" .. context_data.server_settings.gameid .. ")\n" ..
-                "Mapgen: " .. context_data.server_settings.mapgen .. "\n" ..
-                "World Path: " .. context_data.server_settings.worldpath .. "\n" ..
-                "Port: " .. context_data.server_settings.port .. "\n" ..
-                "Installed Mods (" .. #context_data.installed_mods .. "): " .. mods_list_str .. "\n" ..
-                "Available Commands:\n" .. commands_list_str .. "\n" .. -- HINZUGEFÜGT
-                materials_context_str
+                                    "Player: " .. context_data.player .. "\n"
+
+            -- Conditional Player Position
+            if send_player_pos then
+                metadata_string = metadata_string .. "Player Position: " .. context_data.player_position .. "\n"
+            end
+
+            -- Conditional Server Info
+            if send_server_info then
+                metadata_string = metadata_string ..
+                    "Server Name: " .. context_data.server_settings.server_name .. "\n" ..
+                    "Server Description: " .. context_data.server_settings.server_description .. "\n" ..
+                    "MOTD: " .. context_data.server_settings.motd .. "\n" ..
+                    "Game: " .. context_data.server_settings.game_name .. " (" .. context_data.server_settings.gameid .. ")\n" ..
+                    "Mapgen: " .. context_data.server_settings.mapgen .. "\n" ..
+                    "World Path: " .. context_data.server_settings.worldpath .. "\n" ..
+                    "Port: " .. context_data.server_settings.port .. "\n"
+            end
+
+            -- Conditional Mod List
+            if send_mod_list then
+                local mods_list_str = table.concat(context_data.installed_mods,", ")
+                if #context_data.installed_mods>10 then mods_list_str="(More than 10 installed mods: "..#context_data.installed_mods..")" end
+                metadata_string = metadata_string ..
+                    "Installed Mods (" .. #context_data.installed_mods .. "): " .. mods_list_str .. "\n"
+            end
+
+            -- Conditional Command List
+            if send_commands then
+                local commands_list_str = table.concat(context_data.installed_commands, "\n")
+                metadata_string = metadata_string ..
+                    "Available Commands:\n" .. commands_list_str .. "\n"
+            end
+
+            -- Conditional Materials Context
+            if send_materials and llm_materials_context and llm_materials_context.get_available_materials then
+                metadata_string = metadata_string ..
+                    "\n--- AVAILABLE MATERIALS ---\n" .. llm_materials_context.get_available_materials()
+            end
+
             dynamic_system_prompt = system_prompt_content .. metadata_string
             metadata_cache[name] = { hash = current_metadata_hash, metadata = metadata_string }
         else
@@ -316,6 +389,7 @@ core.register_chatcommand("llm", {
 
         core.log("action", "[llm_connect DEBUG] max_tokens_type = " .. max_tokens_type)
         core.log("action", "[llm_connect DEBUG] max_tokens_value = " .. tostring(max_tokens_value))
+        core.log("action", "[llm_connect DEBUG] API URL used: " .. api_url) -- Log the final URL
 
         -- Send HTTP request
         http.fetch({
