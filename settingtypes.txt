@@ -9,10 +9,28 @@
 llm_max_tokens_integer   (Send max_tokens as integer) bool true
 
 # Your API key for the LLM endpoint
-llm_api_key              (API Key) string 
+llm_api_key              (API Key) string
 
 # The URL of the OpenAI-compatible LLM endpoint
-llm_api_url              (API URL) string 
+llm_api_url              (API URL) string
 
-# The model to use for the LLM (leave empty for none)
-llm_model                (Model) string 
+# The model to use
+[cite_start]for the LLM (leave empty for none) [cite: 34]
+llm_model                (Model) string
+
+# === Context Configuration ===
+
+# Send server name, description, motd, gameid, port, worldpath, mapgen
+llm_context_send_server_info (Send Server Info) bool true
+
+# Send the list of all installed mods
+llm_context_send_mod_list (Send Mod List) bool false
+
+# Send the list of all available chat commands
+llm_context_send_commands (Send Commands List) bool true
+
+# Send the player's current position (x,y,z)
+llm_context_send_player_pos (Send Player Position) bool true
+
+# Send the list of registered nodes, craftitems, tools, and entities
+llm_context_send_materials (Send Available Materials) bool false
