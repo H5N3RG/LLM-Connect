@@ -1,62 +1,299 @@
+
 # LLM Connect
 
-A Luanti (formerly Minetest) mod that connects the game to a Large Language Model (LLM) using an OpenAI-compatible API endpoint.
+**A Luanti (formerly Minetest) mod that integrates Large Language Models (LLMs) directly into the game with an AI-powered Lua IDE and building assistant.**
 
-## Purpose
+![License](https://img.shields.io/badge/license-LGPL--3.0--or--later-blue)
 
-This mod allows players to interact with an LLM directly within the Luanti chat.
-It sends the player's chat message along with relevant in-game context—such as server info, installed mods, and available materials—to a remote API endpoint.
-This enables the LLM to provide highly specific and helpful answers, e.g., on crafting items or locating resources in-game.
+---
 
-## Features
+## 🌟 Overview
 
-- **In-game AI Chat:** Send prompts to the LLM using a simple chat command. - **Context-Aware & Granular:** Automatically includes crucial server and material data in the prompts. **The inclusion of context elements (server info, mod list, materials, position) is now fully configurable via settings.** - **Configurable:** API key, endpoint URL, model, and all **context components** can be set via chat commands or the in-game menu. - **Conversation History:** Maintains short-term conversation history for more relevant responses. - **Robust Token Handling:** Supports sending `max_tokens` as an integer to avoid floating-point issues; optionally configurable via `settingtypes.txt` or chat commands.
+LLM Connect brings modern AI assistance into Luanti worlds.
+Players and developers can interact with a Large Language Model directly in-game to:
 
-## Implementation
+- ask questions
+- generate Lua code
+- analyze or refactor scripts
+- assist with WorldEdit building tasks
+- experiment with sandboxed Lua execution
 
-- Built with Luanti's HTTP API for sending requests to an external, OpenAI-compatible endpoint. - Structured to be understandable and extendable for new contributors.
-- Version: **0.7.8**
+The mod combines an **AI chat interface**, a **Smart Lua IDE**, and **LLM-assisted building tools** into a single integrated workflow.
 
-## Requirements
+---
 
-- A running Luanti server.
-- An API key from a supported service. ## Supported API Endpoints
+## ✨ Core Features
 
-Successfully tested with:
+### 🤖 AI Chat Interface
 
-- Open WebUI
+Interact with a Large Language Model directly inside Luanti.
+
+Features include:
+
+- In-game chat GUI
+- conversation context handling
+- player and world information awareness
+- configurable prompts and system instructions
+- support for OpenAI-compatible APIs
+
+The chat system automatically includes contextual information such as:
+
+- player position
+- installed mods
+- selected materials
+- server environment
+
+---
+
+### 💻 Smart Lua IDE
+
+LLM Connect includes a fully integrated **AI-assisted Lua development environment**.
+
+Capabilities include:
+
+- AI code generation from natural language prompts
+- semantic code explanation
+- automated refactoring
+- code analysis
+- interactive editing interface
+- integration with the game environment
+
+Developers can experiment with Lua snippets directly inside the game.
+
+---
+
+### 🧪 Sandboxed Code Execution
+
+Lua code can be executed inside a controlled environment.
+
+Security features include:
+
+- privilege-based execution access
+- sandboxed runtime
+- optional whitelist restrictions
+- prevention of filesystem access
+
+Execution results are returned to the IDE interface for inspection.
+
+---
+
+### 🏗️ WorldEdit AI Assistant
+
+LLM Connect can assist with building tasks using WorldEdit.
+
+Examples:
+
+- structure generation prompts
+- building suggestions
+- node/material selection
+- architectural transformations
+
+The system can combine:
+
+- player position
+- selected materials
+- worldedit context
+
+to produce context-aware instructions.
+
+---
+
+### 🧱 Material Selection Tools
+
+The mod includes a **material picker** interface that helps the AI understand:
+
+- available nodes
+- building palettes
+- player selections
+
+This improves the quality of building-related prompts.
+
+---
+
+## 🔐 Permission System
+
+Access to AI features is controlled through Luanti privileges.
+
+| Privilege | Description |
+|-----------|-------------|
+| `llm` | Basic AI chat access |
+| `llm_ide` | Access to the Smart Lua IDE |
+| `llm_dev` | Sandbox Lua execution |
+| `llm_root` | Full administrative control |
+
+Server operators should grant privileges carefully.
+
+---
+
+## 📋 Requirements
+
+- Luanti server **5.4.0 or newer recommended**
+- HTTP API enabled
+- Access to a compatible LLM endpoint
+
+Supported providers include:
+
+- OpenAI
+- Ollama
 - LM Studio
-- Mistral AI
-- OpenAI API
-- Ollama and LocalAI (integer `max_tokens` ensures compatibility)
+- LocalAI
+- Open WebUI
+- Mistral
+- Together AI
+- any OpenAI-compatible API
 
-## Commands
+---
 
-- `/llm_setkey <key> [url] [model]` – Sets the API key, URL, and model for the LLM. - `/llm_setmodel <model>` – Sets the LLM model to be used.
-- `/llm_set_endpoint <url>` – Sets the API endpoint URL.
-- `/llm_set_context <count> [player]` – Sets the maximum context length for a player or all players.
-- `/llm_reset` – Resets the conversation history and the cached metadata for the current player.
-- `/llm <prompt>` – Sends a message to the LLM. - `/llm_integer` – Forces `max_tokens` to be sent as an integer (default).
-- `/llm_float` – Sends `max_tokens` as a float (optional, experimental).
+## 🚀 Installation
 
-**Context Control (Configurable via In-Game Settings):**
-The following context elements can be individually toggled `ON`/`OFF` in the Luanti main menu:
-* Send Server Info (`llm_context_send_server_info`)
-* Send Mod List (`llm_context_send_mod_list`)
-* Send Commands List (`llm_context_send_commands`)
-* Send Player Position (`llm_context_send_player_pos`)
-* Send Available Materials (`llm_context_send_materials`)
+### ContentDB (recommended)
 
-## Potential for Expansion
+Install via ContentDB:
 
-- Add support for more API endpoints. - Integrate with additional in-game events or data sources (player inventory, world data).
-- Improve error handling and performance.
-- Create a graphical user interface (formspec) for configuration instead of relying solely on chat commands.
+```
 
-## Contributing
+Content → Mods → LLM Connect
 
-This project is in an early stage and welcomes contributions:
+```
 
-- Even small fixes help, especially with API integration, UI improvements, and performance tuning. - Contributions from experienced developers are highly welcome. ```
+---
+
+### Manual Installation
+
+1. Download the repository or release archive
+2. Extract into your `mods` folder
+3. Ensure the folder name is:
+
+```
+
+llm_connect
+
+```
+
+4. Enable HTTP API in `minetest.conf`
+
+```
+
+secure.http_mods = llm_connect
+
+```
+
+Restart the server.
+
+---
+
+## ⚙️ Configuration
+
+Configuration can be done via:
+
+- `/llm_config` GUI
+- `minetest.conf`
+
+Example:
+
+```
+
+llm_api_key = your-api-key
+llm_api_url = [https://api.openai.com/v1/chat/completions](https://api.openai.com/v1/chat/completions)
+llm_model = gpt-4
+
+llm_temperature = 0.7
+llm_max_tokens = 4000
+llm_timeout = 120
+
+```
+
+Context options:
+
+```
+
+llm_context_send_player_pos = true
+llm_context_send_mod_list = true
+llm_context_send_materials = true
+
+```
+
+---
+
+## 🎮 Commands
+
+| Command | Description |
+|-------|-------------|
+| `/llm` | Open AI chat |
+| `/llm_ide` | Open Smart Lua IDE |
+| `/llm_config` | Open configuration interface |
+
+---
+
+## 🔐 Security Notes
+
+LLM Connect includes multiple safety mechanisms:
+
+- privilege-based access control
+- sandboxed execution environment
+- optional Lua whitelist
+- no filesystem access in sandbox mode
+
+Server administrators should still review generated code carefully.
+
+---
+
+## 🧭 Roadmap
+
+See:
+
+```
+
+ROADMAP_090.md
+
+```
+
+for planned improvements and upcoming features.
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome.
+
+Typical workflow:
+
+1. fork repository
+2. create feature branch
+3. implement changes
+4. submit pull request
+
+Areas of interest:
+
+- new AI integrations
+- UI improvements
+- security auditing
+- building tools
+- documentation
+
+---
+
+## 📜 License
+
+LGPL-3.0-or-later
+
+See `LICENSE`.
+
+---
+
+## 🔗 Links
+
+ContentDB
+https://content.luanti.org/packages/H5N3RG/llm_connect/
+
+Luanti
+https://www.luanti.org/
+
+---
+
+**LLM Connect – Bringing AI-assisted development into Luanti.**
+```
+
+
 
 

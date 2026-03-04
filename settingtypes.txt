@@ -1,36 +1,92 @@
 # ===========================================================================
-# LLM Connect - Luanti/Minetest mod settings
+# LLM Connect - Luanti/Minetest Mod Settings
 # ===========================================================================
-# Configure the LLM connection and behavior in the in-game menu
-# Internal name, (Label), Type, Default, [min max for int/float]
+# LLM Connection, Chat, IDE, WorldEdit & Prompt Behavior
+# Version: 0.9.0
 # ===========================================================================
 
-# Determines whether max_tokens is sent as integer (true) or float (false)
-llm_max_tokens_integer   (Send max_tokens as integer) bool true
+# === LLM API Base Settings ===
 
-# Your API key for the LLM endpoint
-llm_api_key              (API Key) string
+llm_api_key              (API Key)                            string
+llm_api_url              (API URL – OpenAI compatible)        string
+llm_model                (Model Name)                         string
 
-# The URL of the OpenAI-compatible LLM endpoint
-llm_api_url              (API URL) string
+llm_max_tokens           (Max Tokens – Response length)       int    4000   500   16384
+llm_max_tokens_integer   (Send max_tokens as integer)         bool   true
 
-# The model to use
-[cite_start]for the LLM (leave empty for none) [cite: 34]
-llm_model                (Model) string
+llm_temperature          (Temperature – Creativity 0..2)      float  0.7    0.0   2.0
+llm_top_p                (Top P – Nucleus Sampling 0..1)      float  0.9    0.0   1.0
+llm_presence_penalty     (Presence Penalty – -2..2)           float  0.0   -2.0   2.0
+llm_frequency_penalty    (Frequency Penalty – -2..2)          float  0.0   -2.0   2.0
 
-# === Context Configuration ===
+# Global timeout for ALL LLM requests (chat, IDE, WorldEdit).
+# Per-mode overrides (llm_timeout_chat/ide/we) take precedence if set > 0.
+# Default: 120 seconds. Range: 30–600.
+llm_timeout              (Global Request Timeout in seconds)  int    120    30    600
 
-# Send server name, description, motd, gameid, port, worldpath, mapgen
-llm_context_send_server_info (Send Server Info) bool true
+# Per-mode timeout overrides. Set to 0 to use the global llm_timeout.
+llm_timeout_chat         (Chat mode timeout override, 0=global)      int  0   0   600
+llm_timeout_ide          (IDE mode timeout override, 0=global)       int  0   0   600
+llm_timeout_we           (WorldEdit mode timeout override, 0=global) int  0   0   600
 
-# Send the list of all installed mods
-llm_context_send_mod_list (Send Mod List) bool false
+llm_debug                (Enable debug logging)               bool   false
 
-# Send the list of all available chat commands
-llm_context_send_commands (Send Commands List) bool true
 
-# Send the player's current position (x,y,z)
-llm_context_send_player_pos (Send Player Position) bool true
+# === Chat Context ===
 
-# Send the list of registered nodes, craftitems, tools, and entities
-llm_context_send_materials (Send Available Materials) bool false
+llm_context_send_server_info   (Send server info to LLM)           bool   true
+llm_context_send_mod_list      (Send list of active mods)          bool   false
+llm_context_send_commands      (Send available chat commands)       bool   true
+llm_context_send_player_pos    (Send player position and HP)        bool   true
+llm_context_send_materials     (Send node/item/tool registry sample) bool  false
+
+# Max chat history messages sent per LLM request. Oldest dropped first.
+llm_context_max_history        (Max chat history messages sent)     int    20    2   100
+
+
+# === Language ===
+
+llm_language                   (Response language)                  enum   en   en,de,es,fr,it,pt,ru,zh,ja,ko,ar,hi,tr,nl,pl,sv,da,no,fi,cs,hu,ro,el,th,vi,id,ms,he,bn,uk
+llm_language_instruction_repeat (Repeat language instruction)       int    1    0   5
+
+
+# === IDE – Behavior ===
+
+llm_ide_hot_reload             (Hot-reload world after execution)         bool   true
+llm_ide_auto_save              (Auto-save code buffer)                    bool   true
+llm_ide_live_suggestions       (Live suggestions – not yet implemented)   bool   false
+llm_ide_whitelist_enabled      (Sandbox security whitelist)               bool   true
+
+# Send last run output to LLM so it can self-correct after a failed execution.
+llm_ide_include_run_output     (Send last run output for self-correction) bool   true
+
+# Max lines of code sent as context. Prevents token overflow. 0 = no limit.
+llm_ide_max_code_context       (Max code lines sent to LLM, 0=unlimited) int    300   0   2000
+
+
+# === IDE – Guiding Prompts ===
+
+# Inject naming-convention guide into IDE LLM calls.
+# Teaches the model that registrations must use the "llm_connect:" prefix.
+llm_ide_naming_guide           (Inject naming convention guide)           bool   true
+
+# Inject context about active mods and nodes into Generate calls.
+llm_ide_context_mod_list       (Send mod list in IDE context)             bool   true
+llm_ide_context_node_sample    (Send node sample in IDE context)          bool   true
+
+
+# === WorldEdit ===
+
+llm_worldedit_additions        (Enable WorldEditAdditions tools)          bool   true
+llm_we_max_iterations          (Max iterations in WE Loop mode)           int    6     1   20
+llm_we_snapshot_before_exec    (Snapshot before each WE execution)        bool   true
+
+
+# ===========================================================================
+# Notes:
+# - llm_timeout_*: 0 = inherit global llm_timeout
+# - llm_language "en" = no language instruction injected (saves tokens)
+# - llm_ide_* settings only affect the Smart Lua IDE
+# - llm_we_* settings only affect WorldEdit agency mode
+# - Timeout/config changes take effect after /llm_config reload or restart
+# ===========================================================================

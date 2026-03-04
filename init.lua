@@ -1,422 +1,226 @@
 -- ===========================================================================
---  LLM Connect Init v0.7.8
+--  LLM Connect Init v0.9.0-dev
 --  author: H5N3RG
 --  license: LGPL-3.0-or-later
---  Fix: max_tokens type handling, fully configurable, robust JSON
---  Added: metadata for ingame-commads
---  Enhancement: Dynamic metadata handling, player name in prompts
---  NEW: Automatic API endpoint completion for compatibility.
---  UPDATE: Configurable context sending
 -- ===========================================================================
 
 local core = core
+local mod_dir = core.get_modpath("llm_connect")
 
--- Load HTTP API
+-- === HTTP API ===
 local http = core.request_http_api()
 if not http then
     core.log("error", "[llm_connect] HTTP API not available! Add 'llm_connect' to secure.http_mods in minetest.conf!")
     return
 end
 
--- === Load settings from menu / settingtypes.txt ===
-local api_key    = core.settings:get("llm_api_key") or ""
-local api_url    = core.settings:get("llm_api_url") or ""
-local model_name = core.settings:get("llm_model") or ""
-
--- NEW Context Settings
-local send_server_info = core.settings:get_bool("llm_context_send_server_info")
-local send_mod_list    = core.settings:get_bool("llm_context_send_mod_list")
-local send_commands    = core.settings:get_bool("llm_context_send_commands")
-local send_player_pos  = core.settings:get_bool("llm_context_send_player_pos")
-local send_materials   = core.settings:get_bool("llm_context_send_materials")
-
--- NEW: Function to check and complete the API endpoint
-local function finalize_api_url(url)
-    if not url or url == "" then
-        return ""
-    end
-
-    -- 1. Remove trailing slash if present
-    local clean_url = url:gsub("/$", "")
-
-    -- Check if the URL contains a path component (everything after the host:port)
-    -- We assume any '/' after the protocol part (e.g., 'http://') or the host:port
-    -- indicates a user-defined path, which should not be overwritten.
-    -- Simple check: if the URL contains more than two slashes (e.g. 'http://host')
-    -- or if it contains any character after the host:port that is not part of the port number.
-
-    -- Attempt to find the end of the host/port part (first '/' after the protocol slashes)
-    local protocol_end = clean_url:find("://")
-    local host_end = 0
-
-    if protocol_end then
-        host_end = clean_url:find("/", protocol_end + 3) -- Find the first slash after '://'
-    end
-
-    -- If no further slash is found (host_end is nil), it means only the base address (host:port) is present.
-    if not host_end then
-        -- Append the default OpenAI-compatible path
-        return clean_url .. "/v1/chat/completions"
-    end
-
-    -- If a path is found, use the URL as is.
-    return url
-end
-
--- Apply the auto-completion/finalization logic
-api_url = finalize_api_url(api_url)
-
-
--- max_tokens type: default integer, override via settings
-local setting_val = core.settings:get_bool("llm_max_tokens_integer")
-local max_tokens_type = "integer"
-if setting_val == false then
-    max_tokens_type = "float"
-end
-
--- Storage for conversation history per player
-local history = {}
-local max_history = { ["default"] = 10 }
-local metadata_cache = {} -- Cache for metadata to detect changes
-
--- Helper functions
-local function get_history(name)
-    history[name] = history[name] or {}
-    return history[name]
-end
-
-local function get_max_history(name)
-    return max_history[name] or max_history["default"]
-end
-
-local function string_split(str, delim)
-    local res = {}
-    local i = 1
-    local str_len = #str
-    local delim_len = #delim
-    while i <= str_len do
-        local pos = string.find(str, delim, i, true)
-        if pos then
-            table.insert(res, string.sub(str, i, pos - 1))
-            i = pos + delim_len
-        else
-            table.insert(res, string.sub(str, i))
-            break
-        end
-    end
-    return res
-end
-
--- Load optional context files
-local mod_dir = core.get_modpath("llm_connect")
-local llm_materials_context = nil
-pcall(function()
-    llm_materials_context = dofile(mod_dir .. "/llm_materials_context.lua")
-end)
-
-local function read_file_content(filepath)
-    local f = io.open(filepath, "r")
-    if not f then return nil end
-    local content = f:read("*a")
-    f:close()
-    return content
-end
-
-local system_prompt_content = read_file_content(mod_dir .. "/system_prompt.txt") or ""
-
 -- === Privileges ===
-core.register_privilege("llm", { description = "Can chat with the LLM model", give_to_singleplayer=true, give_to_admin=true })
-core.register_privilege("llm_root", { description = "Can configure the LLM API key, model, and endpoint", give_to_singleplayer=true, give_to_admin=true })
+core.register_privilege("llm", {
+    description = "LLM Connect: /llm chat interface (chat mode only)",
+    give_to_singleplayer = true,
+    give_to_admin = true,
+})
 
--- === Metadata Functions ===
-local meta_data_functions = {}
-local function get_username(player_name) return player_name or "Unknown Player" end
-local function get_installed_mods()
-    local mods = {}
-    -- NOTE: core.get_mods is undocumented. Using core.get_modnames (documented) instead.
-    if core.get_modnames then
-        -- core.get_modnames returns a table of mod names, already sorted alphabetically.
-        mods = core.get_modnames()
-    else
-        -- Fallback for extremely old versions
-        table.insert(mods,"Mod list not available (core.get_modnames missing)")
-    end
-    return mods
+core.register_privilege("llm_dev", {
+    description = "LLM Connect: Smart Lua IDE + sandbox code execution (whitelist limited)",
+    give_to_singleplayer = false,
+    give_to_admin = false,
+})
+
+core.register_privilege("llm_worldedit", {
+    description = "LLM Connect: WorldEdit agency (WE Single + WE Loop + material picker)",
+    give_to_singleplayer = false,
+    give_to_admin = false,
+})
+
+core.register_privilege("llm_root", {
+    description = "LLM Connect: Full access (implies llm + llm_dev + llm_worldedit). Config, unrestricted execution, persistent code.",
+    give_to_singleplayer = false,
+    give_to_admin = true,
+})
+
+-- === Load central LLM API module ===
+local llm_api_ok, llm_api = pcall(dofile, mod_dir .. "/llm_api.lua")
+if not llm_api_ok or not llm_api then
+    core.log("error", "[llm_connect] Failed to load llm_api.lua: " .. tostring(llm_api))
+    return
+end
+if not llm_api.init(http) then
+    core.log("error", "[llm_connect] Failed to initialize llm_api")
+    return
 end
 
--- Function to collect chat commands
-local function get_installed_commands()
-    local commands = {}
-    if core.chatcommands then
-        for name, cmd in pairs(core.chatcommands) do
-            if not name:match("^__builtin:") then
-                local desc = cmd.description or "No description"
-                table.insert(commands, "/" .. name .. " " .. (cmd.params or "") .. " - " .. desc)
-            end
+-- === Load code executor ===
+local executor_ok, executor = pcall(dofile, mod_dir .. "/code_executor.lua")
+if not executor_ok or not executor then
+    core.log("error", "[llm_connect] Failed to load code_executor.lua: " .. tostring(executor))
+    return
+end
+
+-- === Load GUI modules ===
+local chat_gui_ok, chat_gui = pcall(dofile, mod_dir .. "/chat_gui.lua")
+if not chat_gui_ok then
+    core.log("error", "[llm_connect] Failed to load chat_gui.lua: " .. tostring(chat_gui))
+    return
+end
+
+local ide_gui_ok, ide_gui = pcall(dofile, mod_dir .. "/ide_gui.lua")
+if not ide_gui_ok then
+    core.log("error", "[llm_connect] Failed to load ide_gui.lua: " .. tostring(ide_gui))
+    return
+end
+
+local config_gui_ok, config_gui = pcall(dofile, mod_dir .. "/config_gui.lua")
+if not config_gui_ok then
+    core.log("error", "[llm_connect] Failed to load config_gui.lua: " .. tostring(config_gui))
+    return
+end
+
+-- === Load helpers ===
+local chat_context_ok, chat_context = pcall(dofile, mod_dir .. "/chat_context.lua")
+if not chat_context_ok then
+    core.log("warning", "[llm_connect] chat_context.lua not loaded: " .. tostring(chat_context))
+    chat_context = nil
+end
+
+-- === Load WorldEdit agency module (optional dependency) ===
+local we_agency_ok, we_agency = pcall(dofile, mod_dir .. "/llm_worldedit.lua")
+if not we_agency_ok then
+    core.log("warning", "[llm_connect] llm_worldedit.lua failed to load: " .. tostring(we_agency))
+    we_agency = nil
+elseif not we_agency.is_available() then
+    core.log("warning", "[llm_connect] WorldEdit not detected at load time – agency mode disabled")
+    core.log("warning", "[llm_connect] worldedit global type: " .. type(worldedit))
+    -- NOTE: we_agency is still set as global – we_available() checks at runtime
+    -- so WE buttons may still appear if worldedit loads later (should not happen with optional_depends)
+end
+
+-- === Load material picker ===
+local picker_ok, material_picker = pcall(dofile, mod_dir .. "/material_picker.lua")
+if not picker_ok then
+    core.log("warning", "[llm_connect] material_picker.lua not loaded: " .. tostring(material_picker))
+    material_picker = nil
+end
+
+-- === Make modules globally available ===
+_G.chat_gui        = chat_gui
+_G.llm_api         = llm_api
+_G.executor        = executor
+_G.we_agency       = we_agency
+_G.material_picker = material_picker
+_G.ide_gui         = ide_gui
+_G.config_gui      = config_gui
+
+-- === Startup code loader ===
+local startup_file = core.get_worldpath() .. "/llm_startup.lua"
+
+local function load_startup_code()
+    local f = io.open(startup_file, "r")
+    if f then
+        f:close()
+        core.log("action", "[llm_connect] Loading startup code from " .. startup_file)
+        local ok, err = pcall(dofile, startup_file)
+        if not ok then
+            core.log("error", "[llm_connect] Startup code error: " .. tostring(err))
+            core.log("error", "[llm_connect] Fix the error in llm_startup.lua and restart the server")
+        else
+            core.log("action", "[llm_connect] Startup code loaded successfully")
         end
-        table.sort(commands)
     else
-        table.insert(commands, "Command list not available.")
+        core.log("action", "[llm_connect] No llm_startup.lua found (this is normal on first run)")
     end
-    return commands
 end
 
-local function get_server_settings()
-    local settings = {
-        server_name       = core.settings:get("server_name") or "Unnamed Server",
-        server_description= core.settings:get("server_description") or "No description",
-        motd              = core.settings:get("motd") or "No MOTD set",
-        port              = core.settings:get("port") or "Unknown",
-        gameid            = (core.get_game_info and core.get_game_info().id) or core.settings:get("gameid") or "Unknown",
-        game_name         = (core.get_game_info and core.get_game_info().name) or "Unknown",
-        worldpath         = core.get_worldpath() or "Unknown",
-        mapgen            = core.get_mapgen_setting("mg_name") or "Unknown",
-    }
-    return settings
-end
-
-function meta_data_functions.gather_context(player_name)
-    local context = {}
-    context.player = get_username(player_name)
-    context.installed_mods = get_installed_mods()
-    context.installed_commands = get_installed_commands()
-    context.server_settings = get_server_settings()
-    -- Add dynamic player data (e.g., position)
-    local player = core.get_player_by_name(player_name)
-    if player then
-        local pos = player:get_pos()
-        context.player_position = string.format("x=%.2f, y=%.2f, z=%.2f", pos.x, pos.y, pos.z)
-    else
-        context.player_position = "Unknown"
-    end
-    return context
-end
-
--- Compute a simple hash for metadata to detect changes
-local function compute_metadata_hash(context)
-    -- Hash calculation now depends on which fields are active to avoid unnecessary cache busts
-    local str = context.player
-    if send_server_info then str = str .. context.server_settings.server_name .. context.server_settings.worldpath end
-    if send_mod_list then str = str .. table.concat(context.installed_mods, ",") end
-    if send_commands then str = str .. table.concat(context.installed_commands, ",") end
-    if send_player_pos then str = str .. context.player_position end
-    -- Material context has its own hash in llm_materials_context.lua, so we don't include it here
-    return core.sha1(str)
-end
+load_startup_code()
 
 -- === Chat Commands ===
-core.register_chatcommand("llm_setkey", {
-    params = "<key> [url] [model]",
-    description = "Sets the API key, URL, and model for the LLM.",
-    privs = {llm_root=true},
-    func = function(name,param)
-        if not core.check_player_privs(name,{llm_root=true}) then return false,"No permission!" end
-        local parts = string_split(param," ")
-        if #parts==0 then return false,"Please provide API key!" end
-        api_key = parts[1]
-        if parts[2] then api_url = finalize_api_url(parts[2]) end -- Apply finalization here too
-        if parts[3] then model_name = parts[3] end
-        core.chat_send_player(name,"[LLM] API key, URL and model set. (URL auto-corrected if only host:port was provided.)")
-        return true
-    end,
-})
 
-core.register_chatcommand("llm_setmodel", {
-    params = "<model>",
-    description = "Sets the LLM model.",
-    privs = {llm_root=true},
-    func = function(name,param)
-        if not core.check_player_privs(name,{llm_root=true}) then return false,"No permission!" end
-        if param=="" then return false,"Provide a model name!" end
-        model_name = param
-        core.chat_send_player(name,"[LLM] Model set to '"..model_name.."'.")
-        return true
-    end,
-})
-
-core.register_chatcommand("llm_set_endpoint", {
-    params = "<url>",
-    description = "Sets the API endpoint URL.",
-    privs = {llm_root=true},
-    func = function(name,param)
-        if not core.check_player_privs(name,{llm_root=true}) then return false,"No permission!" end
-        if param=="" then return false,"Provide URL!" end
-        api_url = finalize_api_url(param) -- Apply finalization here
-        core.chat_send_player(name,"[LLM] API endpoint set to "..api_url.." (URL auto-corrected if only host:port was provided.)")
-        return true
-    end,
-})
-
-core.register_chatcommand("llm_set_context", {
-    params = "<count> [player]",
-    description = "Sets the max context length.",
-    privs = {llm_root=true},
-    func = function(name,param)
-        if not core.check_player_privs(name,{llm_root=true}) then return false,"No permission!" end
-        local parts = string_split(param," ")
-        local count = tonumber(parts[1])
-        local target_player = parts[2]
-        if not count or count<1 then return false,"Provide number > 0!" end
-        if target_player and target_player~="" then max_history[target_player]=count
-        else max_history["default"]=count end
-        core.chat_send_player(name,"[LLM] Context length set.")
-        return true
-    end,
-})
-
-core.register_chatcommand("llm_float", {
-    description = "Set max_tokens as float",
-    privs = {llm_root=true},
-    func = function(name)
-        max_tokens_type="float"
-        core.chat_send_player(name,"[LLM] max_tokens now sent as float.")
-        return true
-    end,
-})
-
-core.register_chatcommand("llm_integer", {
-    description = "Set max_tokens as integer",
-    privs = {llm_root=true},
-    func = function(name)
-        max_tokens_type="integer"
-        core.chat_send_player(name,"[LLM] max_tokens now sent as integer.")
-        return true
-    end,
-})
-
-core.register_chatcommand("llm_reset", {
-    description = "Resets conversation and context.",
-    privs = {llm=true},
-    func = function(name)
-        history[name] = {}
-        metadata_cache[name] = nil -- Reset metadata cache
-        core.chat_send_player(name,"[LLM] Conversation and metadata reset.")
-    end,
-})
-
--- === Main Chat Command ===
 core.register_chatcommand("llm", {
-    params = "<prompt>",
-    description = "Sends prompt to the LLM",
-    privs = {llm=true},
-    func = function(name,param)
-        if not core.check_player_privs(name,{llm=true}) then return false,"No permission!" end
-        if param=="" then return false,"Provide a prompt!" end
-        if api_key=="" or api_url=="" or model_name=="" then
-            return false,"[LLM] API key, URL, or Model not set! Check mod settings."
-        end
-
-        local player_history = get_history(name)
-        local max_hist = get_max_history(name)
-        -- Add player name to prompt for clarity
-        local user_prompt = "Player " .. name .. ": " .. param
-        table.insert(player_history,{role="user",content=user_prompt})
-        while #player_history>max_hist do table.remove(player_history,1) end
-
-        -- Gather and cache metadata
-        local context_data = meta_data_functions.gather_context(name)
-        local current_metadata_hash = compute_metadata_hash(context_data)
-        local needs_metadata_update = not metadata_cache[name] or metadata_cache[name].hash ~= current_metadata_hash
-
-        local messages = {}
-        -- Build dynamic system prompt with metadata
-        local dynamic_system_prompt = system_prompt_content
-        if needs_metadata_update then
-            local metadata_string = "\n\n--- METADATA ---\n" ..
-                                    "Player: " .. context_data.player .. "\n"
-
-            -- Conditional Player Position
-            if send_player_pos then
-                metadata_string = metadata_string .. "Player Position: " .. context_data.player_position .. "\n"
-            end
-
-            -- Conditional Server Info
-            if send_server_info then
-                metadata_string = metadata_string ..
-                    "Server Name: " .. context_data.server_settings.server_name .. "\n" ..
-                    "Server Description: " .. context_data.server_settings.server_description .. "\n" ..
-                    "MOTD: " .. context_data.server_settings.motd .. "\n" ..
-                    "Game: " .. context_data.server_settings.game_name .. " (" .. context_data.server_settings.gameid .. ")\n" ..
-                    "Mapgen: " .. context_data.server_settings.mapgen .. "\n" ..
-                    "World Path: " .. context_data.server_settings.worldpath .. "\n" ..
-                    "Port: " .. context_data.server_settings.port .. "\n"
-            end
-
-            -- Conditional Mod List
-            if send_mod_list then
-                local mods_list_str = table.concat(context_data.installed_mods,", ")
-                if #context_data.installed_mods>10 then mods_list_str="(More than 10 installed mods: "..#context_data.installed_mods..")" end
-                metadata_string = metadata_string ..
-                    "Installed Mods (" .. #context_data.installed_mods .. "): " .. mods_list_str .. "\n"
-            end
-
-            -- Conditional Command List
-            if send_commands then
-                local commands_list_str = table.concat(context_data.installed_commands, "\n")
-                metadata_string = metadata_string ..
-                    "Available Commands:\n" .. commands_list_str .. "\n"
-            end
-
-            -- Conditional Materials Context
-            if send_materials and llm_materials_context and llm_materials_context.get_available_materials then
-                metadata_string = metadata_string ..
-                    "\n--- AVAILABLE MATERIALS ---\n" .. llm_materials_context.get_available_materials()
-            end
-
-            dynamic_system_prompt = system_prompt_content .. metadata_string
-            metadata_cache[name] = { hash = current_metadata_hash, metadata = metadata_string }
-        else
-            dynamic_system_prompt = system_prompt_content .. metadata_cache[name].metadata
-        end
-
-        table.insert(messages,{role="system",content=dynamic_system_prompt})
-        for _,msg in ipairs(player_history) do table.insert(messages,msg) end
-
-        -- === max_tokens handling with final JSON fix ===
-        local max_tokens_value = 2000
-        if max_tokens_type == "integer" then
-            max_tokens_value = math.floor(max_tokens_value)
-        else
-            max_tokens_value = tonumber(max_tokens_value)
-        end
-
-        local body = core.write_json({ model=model_name, messages=messages, max_tokens=max_tokens_value })
-
-        -- Force integer in JSON string if needed (important for Go backends)
-        if max_tokens_type == "integer" then
-            body = body:gsub('"max_tokens"%s*:%s*(%d+)%.0', '"max_tokens": %1')
-        end
-
-        core.log("action", "[llm_connect DEBUG] max_tokens_type = " .. max_tokens_type)
-        core.log("action", "[llm_connect DEBUG] max_tokens_value = " .. tostring(max_tokens_value))
-        core.log("action", "[llm_connect DEBUG] API URL used: " .. api_url) -- Log the final URL
-
-        -- Send HTTP request
-        http.fetch({
-            url = api_url,
-            post_data = body,
-            method = "POST",
-            extra_headers = {
-                "Content-Type: application/json",
-                "Authorization: Bearer " .. api_key
-            },
-            timeout = 90,
-        }, function(result)
-            if result.succeeded then
-                local response = core.parse_json(result.data)
-                local text = "(no answer)"
-                if response and response.choices and response.choices[1] and response.choices[1].message then
-                    text = response.choices[1].message.content
-                    table.insert(player_history,{role="assistant",content=text})
-                elseif response and response.message and response.message.content then
-                    text = response.message.content
-                end
-                core.chat_send_player(name,"[LLM] "..text)
-            else
-                core.chat_send_player(name,"[LLM] Request failed: "..(result.error or "Unknown error"))
-            end
-        end)
-
-        return true,"Request sent..."
+    description = "Opens the LLM chat interface",
+    privs = {llm = true},
+    func = function(name)
+        chat_gui.show(name)
+        return true, "Opening LLM chat..."
     end,
 })
+
+core.register_chatcommand("llm_msg", {
+    params = "<message>",
+    description = "Send a direct message to the LLM (text-only, no GUI)",
+    privs = {llm = true},
+    func = function(name, param)
+        if not param or param == "" then
+            return false, "Usage: /llm_msg <your question>"
+        end
+        local messages = {{role = "user", content = param}}
+        llm_api.request(messages, function(result)
+            if result.success then
+                core.chat_send_player(name, "[LLM] " .. (result.content or "(no response)"))
+            else
+                core.chat_send_player(name, "[LLM] Error: " .. (result.error or "unknown error"))
+            end
+        end, {timeout = llm_api.get_timeout("chat")})
+        return true, "Request sent..."
+    end,
+})
+
+core.register_chatcommand("llm_undo", {
+    description = "Undo the last WorldEdit agency operation",
+    privs = {llm = true},
+    func = function(name)
+        if not _G.we_agency then
+            return false, "WorldEdit agency module not loaded"
+        end
+        local res = _G.we_agency.undo(name)
+        return res.ok, "[LLM] " .. res.message
+    end,
+})
+
+core.register_chatcommand("llm_reload_startup", {
+    description = "Reload llm_startup.lua (WARNING: Cannot register new items!)",
+    privs = {llm_root = true},
+    func = function(name)
+        core.log("action", "[llm_connect] Manual startup reload triggered by " .. name)
+        core.chat_send_player(name, "[LLM] WARNING: Reloading startup code at runtime")
+        core.chat_send_player(name, "[LLM] New registrations will FAIL. Restart server for registrations.")
+        local f = io.open(startup_file, "r")
+        if f then
+            f:close()
+            local ok, err = pcall(dofile, startup_file)
+            if not ok then
+                core.chat_send_player(name, "[LLM] x Reload failed: " .. tostring(err))
+                return false, "Reload failed"
+            else
+                core.chat_send_player(name, "[LLM] Reloaded (restart needed for registrations)")
+                return true, "Code reloaded"
+            end
+        else
+            core.chat_send_player(name, "[LLM] x No llm_startup.lua found")
+            return false, "File not found"
+        end
+    end,
+})
+
+-- === Central formspec handler ===
+core.register_on_player_receive_fields(function(player, formname, fields)
+    if not player then return false end
+    local name = player:get_player_name()
+
+    if formname:match("^llm_connect:chat") or formname:match("^llm_connect:material_picker") then
+        return chat_gui.handle_fields(name, formname, fields)
+    elseif formname:match("^llm_connect:ide") then
+        return ide_gui.handle_fields(name, formname, fields)
+    elseif formname:match("^llm_connect:config") then
+        return config_gui.handle_fields(name, formname, fields)
+    end
+
+    return false
+end)
+
+-- === Logging ===
+core.log("action", "[llm_connect] LLM Connect v0.9.0 loaded")
+if llm_api.is_configured() then
+    core.log("action", "[llm_connect] LLM API ready - model: " .. tostring(llm_api.config.model))
+else
+    core.log("warning", "[llm_connect] LLM API not configured yet - use /llm and open Config button")
+end
