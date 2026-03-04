@@ -20,7 +20,7 @@ local function player_has_priv(name, priv)
     return privs[priv] == true
 end
 
--- llm_root ist Superrolle: impliziert llm_dev und alle anderen
+-- llm_root is a super-role: implies llm_dev and all others
 local function has_llm_priv(name, priv)
     if player_has_priv(name, "llm_root") then return true end
     return player_has_priv(name, priv)
@@ -159,7 +159,7 @@ function M.execute(player_name, code, options)
     local use_sandbox   = options.sandbox ~= false
     local allow_persist = options.allow_persist or is_root
 
-    -- Prüfen ob der Player überhaupt Ausführungsrechte hat
+    -- Check whether the player has execution rights at all
     if not has_llm_priv(player_name, "llm_dev") then
         result.error = "Missing privilege: llm_dev (or llm_root)"
         return result

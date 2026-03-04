@@ -35,7 +35,7 @@ end
 
 -- ============================================================
 -- Privilege helpers
--- llm_root is a superrole: implies llm + llm_dev + llm_worldedit
+-- llm_root is a super-role: implies llm + llm_dev + llm_worldedit
 -- ============================================================
 
 local function raw_priv(name, priv)
@@ -132,7 +132,7 @@ function M.show(name)
     table.insert(fs, "box[0,0;" .. W .. "," .. HEADER_H .. ";#202020]")
     table.insert(fs, "label[" .. PAD .. ",0.30;LLM Chat - " .. core.formspec_escape(name) .. "]")
 
-    -- ── Header Zeile 1 rechts: Config (root) + IDE (dev) ────
+    -- ── Header row 1 right side: Config (root) + IDE (dev) ────
     local right_x = W - PAD
     if can_config(name) then
         right_x = right_x - 2.0
@@ -147,7 +147,7 @@ function M.show(name)
         table.insert(fs, "tooltip[open_ide;Open Smart Lua IDE (llm_dev)]")
     end
 
-    -- Header Zeile 2: drei direkte WE-Mode Buttons nebeneinander
+    -- Header row 2: three direct WE-Mode buttons side by side
     local mode = session.we_mode or "chat"
     if can_worldedit(name) then
         local we_ok = we_available()
@@ -206,7 +206,7 @@ end
 -- ============================================================
 
 function M.handle_fields(name, formname, fields)
-    -- Material Picker weiterleiten
+    -- Forward to Material Picker
     if formname:match("^llm_connect:material_picker") then
         if material_picker then
             local result = material_picker.handle_fields(name, formname, fields)
@@ -223,7 +223,7 @@ function M.handle_fields(name, formname, fields)
     local session = get_session(name)
     local updated = false
 
-    -- ── WE-Buttons (privilege-geprüft) ──────────────────────
+    -- ── WE-Buttons (privilege-checked) ──────────────────────
 
     if fields.we_btn_chat then
         if can_worldedit(name) then session.we_mode = "chat"; updated = true end
@@ -246,7 +246,7 @@ function M.handle_fields(name, formname, fields)
             updated = true
         end
 
-    -- ── IDE / Config (privilege-geprüft) ────────────────────
+    -- ── IDE / Config (privilege-checked) ────────────────────
 
     elseif fields.open_ide then
         if can_ide(name) and _G.ide_gui then
@@ -313,9 +313,9 @@ function M.handle_fields(name, formname, fields)
                     M.show(name)
                 end)
 
-            -- Normal Chat (immer erlaubt wenn llm)
+            -- Normal Chat (always allowed if llm privilege is present)
             else
-                -- WE-Mode zurücksetzen wenn kein Privileg
+                -- Reset WE-mode if player lacks privilege
                 if session.we_mode ~= "chat" and not can_worldedit(name) then
                     session.we_mode = "chat"
                 end
