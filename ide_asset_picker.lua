@@ -396,7 +396,9 @@ function M.show(player_name)
     end
 
     local total = #candidates
-    local page, total_pages, first, last = paginate(total, ITEMS_PER_PAGE, sess.page)
+    -- Sound tab uses 2 columns x 12 rows = 24 per page to fit GRID_H
+    local items_per_page = (tab == TAB_SOUNDS) and 24 or ITEMS_PER_PAGE
+    local page, total_pages, first, last = paginate(total, items_per_page, sess.page)
     sess.page = page
 
     local selected_count = M.get_asset_count(player_name)
@@ -498,38 +500,44 @@ function M.show(player_name)
     local IMG  = TILE_SIZE - 0.25
 
     if tab == TAB_SOUNDS then
-        -- Sound tab: text buttons instead of item images (no icon available)
+        -- Sound tab: 2 columns, tall buttons (full name visible), filled top-to-bottom per column.
         -- NOTE: style[] does not work with runtime-generated button names in Luanti.
-        -- Use a box[] behind the button for selection highlight instead.
-        local col = 0
-        local row = 0
-        local BTN_W = (W - PAD * 2 - TILE_PAD * (COLS - 1)) / COLS
-        local BTN_H = TILE_SIZE  -- same height as tile grid for consistent layout
-        local ROW_STEP = BTN_H + TILE_PAD
+        -- Use box[] behind button for selection highlight.
+        local S_COLS    = 2
+        local S_BTN_H   = 0.52
+        local S_PAD     = TILE_PAD
+        local S_BTN_W   = (W - PAD * 2 - S_PAD * (S_COLS - 1)) / S_COLS
+        local S_ROW_STEP = S_BTN_H + S_PAD
+        local rows_per_col = math.ceil(#page_items / S_COLS)
 
         for idx, sname in ipairs(page_items) do
-            local tx  = PAD + col * (BTN_W + TILE_PAD)
-            local ty  = y   + row * ROW_STEP
+            -- Fill column-first (top-to-bottom, then next column)
+            local col_idx = math.floor((idx - 1) / rows_per_col)
+            local row_idx = (idx - 1) % rows_per_col
+            local tx  = PAD + col_idx * (S_BTN_W + S_PAD)
+            local ty  = y   + row_idx * S_ROW_STEP
             local key = sound_key(sname)
             local sel = sess.selected[key] == true
-            local btn = "stile_" .. tostring((page - 1) * ITEMS_PER_PAGE + idx)
+            local btn = "stile_" .. tostring((page - 1) * items_per_page + idx)
 
-            -- Background box for selection highlight (box[] works at runtime)
+            -- Background box for selection highlight
             local bg = sel and "#1a2a3a" or "#111118"
             table.insert(fs, "box["
-                .. string.format("%.2f,%.2f;%.2f,%.2f", tx, ty, BTN_W, BTN_H)
+                .. string.format("%.2f,%.2f;%.2f,%.2f", tx, ty, S_BTN_W, S_BTN_H)
                 .. ";" .. bg .. "]")
 
-            -- Button on top (transparent bgcolor via style_type override not needed –
-            -- the box behind provides the color; button itself uses default dark theme)
+            -- Button: full sound name
             table.insert(fs, "button["
-                .. string.format("%.2f,%.2f;%.2f,%.2f", tx, ty, BTN_W, BTN_H)
-                .. ";" .. btn .. ";" .. core.formspec_escape(
-                    (sel and "✔ " or "") .. sname) .. "]")
+                .. string.format("%.2f,%.2f;%.2f,%.2f", tx, ty, S_BTN_W, S_BTN_H)
+                .. ";" .. btn .. ";" .. core.formspec_escape(sname) .. "]")
             table.insert(fs, "tooltip[" .. btn .. ";" .. core.formspec_escape(sname) .. "]")
 
-            col = col + 1
-            if col >= COLS then col = 0; row = row + 1 end
+            -- Checkmark label (label[] uses correct font path for ✔)
+            if sel then
+                table.insert(fs, "label["
+                    .. string.format("%.2f,%.2f", tx + S_BTN_W - 0.35, ty + 0.17)
+                    .. ";" .. core.colorize("#00aaff", "✔") .. "]")
+            end
         end
     else
         -- Node / Item tab: item_image_button tiles
@@ -656,7 +664,8 @@ function M.handle_fields(player_name, formname, fields)
     else                     candidates = sound_candidates(filter)
     end
     local total = #candidates
-    local page, total_pages, first, last = paginate(total, ITEMS_PER_PAGE, sess.page)
+    local items_per_page = (tab == TAB_SOUNDS) and 24 or ITEMS_PER_PAGE
+    local page, total_pages, first, last = paginate(total, items_per_page, sess.page)
 
     -- ── Pagination ────────────────────────────────────────────
     if fields.page_prev then
@@ -729,6 +738,8 @@ function M.handle_fields(player_name, formname, fields)
                     sess.selected[k] = nil
                 else
                     sess.selected[k] = true
+                    -- Play sound preview for orientation
+                    core.sound_play(sname, {to_player = player_name, gain = 1.0})
                 end
             end
             M.show(player_name); return true

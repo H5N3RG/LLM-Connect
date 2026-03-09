@@ -298,6 +298,14 @@ function M.show(name)
     add_btn("explain", "Explain",  "AI: explain the code in plain language", true)
     add_btn("run",     "▶ Run",    can_execute(name) and "Execute in sandbox" or "Execute (needs llm_dev)", can_execute(name))
 
+    -- Auto-Fix: only active after a failed run
+    if session.run_failed then
+        table.insert(fs, "style[auto_fix;bgcolor=#3a1a00;textcolor=#ffcc44]")
+        add_btn("auto_fix", "⟳ Auto-Fix", "AI debug loop: auto-correct and re-run (max 3 iters)", true)
+    else
+        add_btn("auto_fix", "Auto-Fix", "Run code first to enable auto-fix on error", false)
+    end
+
     if session.pending_proposal then
         table.insert(fs, "style[apply;bgcolor=#2a6a2a;textcolor=#ffffff]")
         add_btn("apply", "✓ Apply", "Apply AI proposal into editor", true)
@@ -601,6 +609,9 @@ function M.handle_fields(name, formname, fields)
     elseif fields.run and can_execute(name) then
         M.run_code(name); return true
 
+    elseif fields.auto_fix and can_execute(name) then
+        M.auto_fix(name); return true
+
     elseif fields.apply then
         if session.pending_proposal then
             session.code             = session.pending_proposal
@@ -769,26 +780,96 @@ function M.run_code(name)
     local session  = get_session(name)
     local executor = get_executor()
 
-    session.output = "Executing… (please wait)"
+    session.output       = "Executing… (please wait)"
+    session.run_failed   = false
     M.show(name)
 
-    local res = executor.execute(name, session.code, {sandbox = true})
+    local res = executor.execute(name, session.code, {sandbox = true, precheck = true})
+
+    -- Surface pre-check warnings even on success
+    local pre_warn = res.precheck_warnings or ""
+
     if res.success then
-        local out = "✓ Execution successful.\n\nOutput:\n"
-            .. (res.output ~= "" and res.output or "(no output)")
+        local out = "✓ Execution successful."
+        if pre_warn ~= "" then
+            out = out .. "\n\n⚠ Pre-check warnings (non-blocking):\n" .. pre_warn
+        end
+        out = out .. "\n\nOutput:\n" .. (res.output ~= "" and res.output or "(no output)")
         if res.return_value then out = out .. "\n\nReturn: " .. tostring(res.return_value) end
         if res.persisted    then out = out .. "\n\n→ Startup file updated (restart needed)" end
         session.output          = out
-        session.last_run_output = out   -- store for context injection
+        session.last_run_output = out
+        session.run_failed      = false
     else
         local err_out = "✗ Execution failed:\n" .. (res.error or "Unknown error")
         if res.output and res.output ~= "" then
             err_out = err_out .. "\n\nOutput before error:\n" .. res.output
         end
         session.output          = err_out
-        session.last_run_output = err_out   -- errors are especially useful as context
+        session.last_run_output = err_out
+        session.run_failed      = true   -- enables Auto-Fix button
     end
     M.show(name)
+end
+
+-- Auto-Fix: trigger debug loop via LLM after a failed run
+function M.auto_fix(name)
+    local session  = get_session(name)
+    local executor = get_executor()
+    local llm_api  = _G.llm_api
+
+    if not llm_api or not llm_api.is_configured() then
+        session.output = "✗ Auto-Fix: LLM not configured"
+        M.show(name); return
+    end
+
+    local max_iter = tonumber(core.settings:get("llm_ide_auto_fix_iterations")) or 3
+    session.output = ("Auto-Fix running… (max %d iterations)"):format(max_iter)
+    session.run_failed = false
+    M.show(name)
+
+    local original_code = session.code
+    local iter_log = {}
+
+    executor.execute_with_retry(name, session.code, {
+        sandbox        = true,
+        max_iterations = max_iter,
+        llm_request    = function(messages, cb)
+            llm_api.request(messages, cb, {timeout = llm_api.get_timeout("ide")})
+        end,
+
+        on_iteration = function(iter, code, last_err)
+            table.insert(iter_log, ("Iteration %d…"):format(iter))
+            session.output = table.concat(iter_log, "\n")
+            M.show(name)
+        end,
+
+        on_done = function(result, final_code)
+            -- Update code in editor if it changed
+            if final_code ~= original_code then
+                session.code = final_code
+            end
+
+            local summary
+            if result.success then
+                summary = "✓ Auto-Fix succeeded after "
+                    .. #iter_log .. " iteration(s).\n\nOutput:\n"
+                    .. (result.output ~= "" and result.output or "(no output)")
+                session.run_failed = false
+            elseif result.debug_loop_aborted then
+                summary = "✗ Auto-Fix aborted: " .. (result.debug_loop_reason or "unknown")
+                    .. "\n\nLast error:\n" .. (result.error or "")
+                session.run_failed = true
+            else
+                summary = "✗ Auto-Fix failed.\n" .. (result.error or "")
+                session.run_failed = true
+            end
+
+            session.output          = summary
+            session.last_run_output = summary
+            M.show(name)
+        end,
+    })
 end
 
 -- ======================================================

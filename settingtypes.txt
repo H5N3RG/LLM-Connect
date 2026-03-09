@@ -64,6 +64,10 @@ llm_ide_include_run_output     (Send last run output for self-correction) bool  
 # Max lines of code sent as context. Prevents token overflow. 0 = no limit.
 llm_ide_max_code_context       (Max code lines sent to LLM, 0=unlimited) int    300   0   2000
 
+# Auto-Fix debug loop: max LLM fix iterations after a failed run.
+# 0 = disabled. Each iteration calls the LLM once to fix the error.
+llm_ide_auto_fix_iterations    (Auto-Fix max iterations, 0=off)          int    3     0   10
+
 
 # === IDE – Context Injection ===
 

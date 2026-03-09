@@ -225,7 +225,7 @@ function M.show(player_name)
         if is_sel then
             table.insert(fs, "label["
                 .. string.format("%.2f,%.2f", tx + TILE_SIZE - 0.38, ty + 0.18)
-                .. ";§(c=#00ff00)✔]")
+                .. ";" .. core.colorize("#00ff00", "✔") .. "]")
         end
 
         -- Tooltip: Node-Name
