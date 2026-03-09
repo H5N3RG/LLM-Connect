@@ -1,6 +1,7 @@
 -- ide_gui.lua
 -- Smart Lua IDE interface for LLM-Connect
 -- v0.9.0: File manager with dropdown, save/load from dedicated snippets folder
+--         Context system: asset picker, API stubs, last run output injection
 
 local core = core
 local M = {}
@@ -24,10 +25,6 @@ end
 
 core.log("action", "[ide_gui] snippets dir: " .. SNIPPETS_DIR)
 
-local function get_snippets_dir()
-    return SNIPPETS_DIR
-end
-
 local function ensure_snippets_dir()
     -- Dir was already created at load time; this is now a no-op that just returns the path
     return SNIPPETS_DIR
@@ -36,13 +33,8 @@ end
 -- Index file tracks all saved snippets (avoids core.get_dir_list which is unreliable under mod security)
 local INDEX_PATH = SNIPPETS_DIR .. "/_index.txt"
 
-local function get_index_path()
-    return INDEX_PATH
-end
-
 local function read_index()
-    local path = get_index_path()
-    local f = io.open(path, "r")
+    local f = io.open(INDEX_PATH, "r")
     if not f then return {} end
     local files = {}
     for line in f:lines() do
@@ -57,7 +49,6 @@ local function read_index()
 end
 
 local function write_index(files)
-    local path = get_index_path()
     local sorted = {}
     for _, v in ipairs(files) do table.insert(sorted, v) end
     table.sort(sorted)
@@ -67,7 +58,7 @@ local function write_index(files)
     for _, v in ipairs(sorted) do
         if not seen[v] then seen[v] = true; table.insert(deduped, v) end
     end
-    local ok = core.safe_file_write(path, table.concat(deduped, "\n"))
+    local ok = core.safe_file_write(INDEX_PATH, table.concat(deduped, "\n"))
     return ok
 end
 
@@ -94,17 +85,13 @@ end
 
 -- One-time migration: if index is empty, probe known filenames via io.open
 -- and rebuild the index from whatever is actually on disk.
--- Luanti doesn't give us reliable directory listing under mod security,
--- so we use a best-effort scan of any names we can discover.
 local migration_done = false
 local function maybe_migrate()
     if migration_done then return end
     migration_done = true
     local idx = read_index()
-    if #idx > 0 then return end  -- index already populated, nothing to do
+    if #idx > 0 then return end
 
-    -- We can't list the directory, but we can check for files the user
-    -- might have saved under common names in older versions.
     local dir = ensure_snippets_dir()
     local candidates = {"untitled.lua", "colorstones.lua", "test.lua", "init.lua", "startup.lua"}
     local found = {}
@@ -136,10 +123,8 @@ local function read_file(filepath)
 end
 
 local function write_file(filepath, content)
-    -- core.safe_file_write does atomic write, preferred for snippets
     local ok = core.safe_file_write(filepath, content)
     if not ok then
-        -- fallback to io.open
         local f, err = io.open(filepath, "w")
         if not f then return false, err end
         f:write(content)
@@ -177,6 +162,7 @@ local function get_prompts()
                 SEMANTIC_ANALYZER = "Analyze this Minetest Lua code for logic errors.",
                 CODE_EXPLAINER    = "Explain this Minetest Lua code simply.",
                 CODE_GENERATOR    = "Generate clean Minetest Lua code based on the user request.",
+                build_context     = function() return nil end,
             }
         else
             prompts = p
@@ -185,7 +171,10 @@ local function get_prompts()
     return prompts
 end
 
--- Session data per player
+-- ======================================================
+-- Session
+-- ======================================================
+
 local sessions = {}
 
 local DEFAULT_CODE = [[-- Welcome to Smart Lua IDE!
@@ -201,15 +190,21 @@ core.register_node("example:test_node", {
 local function get_session(name)
     if not sessions[name] then
         sessions[name] = {
+            -- editor state
             code             = DEFAULT_CODE,
             output           = "Ready!\nUse the toolbar buttons or type a prompt and click Generate.",
-            guiding_active   = false,  -- Naming guide toggle (off by default)
             filename         = "untitled.lua",
             pending_proposal = nil,
             last_prompt      = "",
             last_modified    = os.time(),
             file_list        = {},
             selected_file    = "",
+            -- context toggles
+            guiding_active   = false,   -- llm_connect: naming guide
+            assets_active    = false,   -- IDE asset picker context
+            api_level        = nil,     -- nil | "slim" | "full"
+            -- execution feedback
+            last_run_output  = nil,     -- last run result, separate from display output
         }
         sessions[name].file_list = list_snippet_files()
     end
@@ -222,7 +217,7 @@ local function has_priv(name, priv)
 end
 
 local function can_use_ide(name)
-    return has_priv(name, "llm_ide") or has_priv(name, "llm_dev") or has_priv(name, "llm_root")
+    return has_priv(name, "llm_dev") or has_priv(name, "llm_root")
 end
 
 local function can_execute(name)
@@ -239,12 +234,11 @@ end
 
 function M.show(name)
     if not can_use_ide(name) then
-        core.chat_send_player(name, "Missing privilege: llm_ide (or higher)")
+        core.chat_send_player(name, "[LLM] Missing privilege: llm_dev (or llm_root)")
         return
     end
 
     local session = get_session(name)
-    -- Refresh file list on every render
     session.file_list = list_snippet_files()
 
     local code_esc   = core.formspec_escape(session.code or "")
@@ -257,15 +251,18 @@ function M.show(name)
     local HEADER_H = 0.8
     local TOOL_H   = 0.9
     local FILE_H   = 0.9
+    -- Context toggle row: new row between file manager and prompt
+    local CTX_H    = 0.7
     local PROMPT_H = 0.8
     local STATUS_H = 0.6
 
-    local tool_y   = HEADER_H + PAD
-    local file_y   = tool_y + TOOL_H + PAD
-    local prompt_y = file_y + FILE_H + PAD
-    local work_y   = prompt_y + PROMPT_H + PAD
-    local work_h   = H - work_y - STATUS_H - PAD * 2
-    local col_w    = (W - PAD * 3) / 2
+    local tool_y    = HEADER_H + PAD
+    local file_y    = tool_y + TOOL_H + PAD
+    local ctx_y     = file_y + FILE_H + PAD
+    local prompt_y  = ctx_y + CTX_H + PAD
+    local work_y    = prompt_y + PROMPT_H + PAD
+    local work_h    = H - work_y - STATUS_H - PAD * 2
+    local col_w     = (W - PAD * 3) / 2
 
     local fs = {
         "formspec_version[6]",
@@ -282,10 +279,10 @@ function M.show(name)
     table.insert(fs, "button[" .. (W - PAD - 2.0) .. ",0.08;2.0,0.65;close_ide;x Close]")
 
     -- ── Toolbar ───────────────────────────────────────────────
-    local bw   = 1.85
-    local bp   = 0.12
-    local bh   = TOOL_H - 0.05
-    local x    = PAD
+    local bw  = 1.85
+    local bp  = 0.12
+    local bh  = TOOL_H - 0.05
+    local x   = PAD
 
     local function add_btn(id, label, tip, enabled)
         if not enabled then
@@ -309,10 +306,8 @@ function M.show(name)
     end
 
     -- ── File Manager Row ──────────────────────────────────────
-    -- Layout: [Dropdown (files)] [Load] [Filename field] [Save] [New]
     local files   = session.file_list
     local dd_str  = #files > 0 and table.concat(files, ",") or "(no files)"
-    -- Find index for pre-selection
     local dd_idx  = 1
     if session.selected_file ~= "" then
         for i, f in ipairs(files) do
@@ -325,26 +320,22 @@ function M.show(name)
     local FN_W   = W - PAD * 6 - DD_W - BTN_SM * 3
     local fbh    = FILE_H - 0.05
 
-    -- Dropdown
     table.insert(fs, "dropdown[" .. PAD .. "," .. file_y .. ";" .. DD_W .. "," .. fbh
         .. ";file_dropdown;" .. dd_str .. ";" .. dd_idx .. ";false]")
     table.insert(fs, "tooltip[file_dropdown;Select a saved snippet]")
 
     local fx = PAD + DD_W + PAD
 
-    -- Load button
     table.insert(fs, "button[" .. fx .. "," .. file_y .. ";" .. BTN_SM .. "," .. fbh .. ";file_load;Load]")
     table.insert(fs, "tooltip[file_load;Load selected file into editor]")
     fx = fx + BTN_SM + PAD
 
-    -- Filename input
     table.insert(fs, "field[" .. fx .. "," .. file_y .. ";" .. FN_W .. "," .. fbh .. ";filename_input;;" .. fn_esc .. "]")
     table.insert(fs, "field_close_on_enter[filename_input;false]")
     table.insert(fs, "style[filename_input;bgcolor=#1e1e1e;textcolor=#e8e8e8]")
     table.insert(fs, "tooltip[filename_input;Filename to save as (auto-appends .lua)]")
     fx = fx + FN_W + PAD
 
-    -- Save / New (root only)
     if is_root(name) then
         table.insert(fs, "style[file_save;bgcolor=#2a4a6a;textcolor=#ffffff]")
         table.insert(fs, "button[" .. fx .. "," .. file_y .. ";" .. BTN_SM .. "," .. fbh .. ";file_save;Save]")
@@ -354,11 +345,67 @@ function M.show(name)
         table.insert(fs, "tooltip[file_new;Clear editor for a new file]")
     end
 
+    -- ── Context Toggle Row ────────────────────────────────────
+    -- Layout: [☐ llm_connect: guide]  [☐ Assets (N)]  [☐ API: slim]  [☐ API: full]
+    -- All toggles are checkboxes. api_slim and api_full are mutually exclusive.
+    table.insert(fs, "box[0," .. ctx_y .. ";" .. W .. "," .. CTX_H .. ";#161616]")
+
+    local cx = PAD
+    local cy_cb = ctx_y + (CTX_H - 0.4) / 2  -- vertically centered checkbox
+
+    -- Guide toggle
+    local guide_on = session.guiding_active == true
+    table.insert(fs, "style[guide_toggle;bgcolor=" .. (guide_on and "#1a3a1a" or "#252525") .. ";textcolor=#aaffaa]")
+    table.insert(fs, "checkbox[" .. cx .. "," .. cy_cb .. ";guide_toggle;llm_connect: guide;" .. (guide_on and "true" or "false") .. "]")
+    table.insert(fs, "tooltip[guide_toggle;Inject naming convention guide (llm_connect: prefix) into Generate calls]")
+    cx = cx + 3.3
+
+    -- Assets toggle
+    local assets_on = session.assets_active == true
+    local asset_picker = _G.ide_asset_picker
+    local asset_count  = asset_picker and asset_picker.get_asset_count(name) or 0
+    local assets_label = asset_count > 0 and ("Assets (" .. asset_count .. ")") or "Assets"
+    table.insert(fs, "style[assets_toggle;bgcolor=" .. (assets_on and "#1a2a3a" or "#252525") .. ";textcolor=#aaddff]")
+    table.insert(fs, "checkbox[" .. cx .. "," .. cy_cb .. ";assets_toggle;" .. assets_label .. ";" .. (assets_on and "true" or "false") .. "]")
+    table.insert(fs, "tooltip[assets_toggle;Inject selected asset metadata (nodes/items/sounds) into Generate calls]")
+    cx = cx + 2.8
+
+    -- Assets open button (opens ide_asset_picker formspec)
+    table.insert(fs, "style[assets_open;bgcolor=#1a2030;textcolor=#8899cc]")
+    table.insert(fs, "button[" .. cx .. "," .. ctx_y .. ";1.3," .. CTX_H .. ";assets_open;▸ Pick]")
+    table.insert(fs, "tooltip[assets_open;Open asset picker to select nodes, items, and sounds]")
+    cx = cx + 1.3 + PAD
+
+    -- Separator
+    cx = cx + 0.3
+
+    -- API slim toggle
+    local api_slim_on = session.api_level == "slim"
+    table.insert(fs, "style[api_slim_toggle;bgcolor=" .. (api_slim_on and "#2a1a3a" or "#252525") .. ";textcolor=#ccaaff]")
+    table.insert(fs, "checkbox[" .. cx .. "," .. cy_cb .. ";api_slim_toggle;API: slim;" .. (api_slim_on and "true" or "false") .. "]")
+    table.insert(fs, "tooltip[api_slim_toggle;Inject compact Luanti API reference (~400 tokens) into Generate calls]")
+    cx = cx + 2.4
+
+    -- API full toggle
+    local api_full_on = session.api_level == "full"
+    table.insert(fs, "style[api_full_toggle;bgcolor=" .. (api_full_on and "#3a1a2a" or "#252525") .. ";textcolor=#ffaacc]")
+    table.insert(fs, "checkbox[" .. cx .. "," .. cy_cb .. ";api_full_toggle;API: full;" .. (api_full_on and "true" or "false") .. "]")
+    table.insert(fs, "tooltip[api_full_toggle;Inject full Luanti API reference (~2000 tokens) into Generate calls.\n⚠ High token cost – disable when not needed.]")
+    cx = cx + 2.2
+
+    -- Last run output indicator
+    if session.last_run_output then
+        local run_color = session.last_run_output:match("^✓") and "#1a3a1a" or "#3a1a1a"
+        local run_label = session.last_run_output:match("^✓") and "⬤ last run: ok" or "⬤ last run: err"
+        table.insert(fs, "box[" .. cx .. "," .. ctx_y .. ";2.8," .. CTX_H .. ";" .. run_color .. "]")
+        table.insert(fs, "label[" .. (cx + 0.1) .. "," .. (ctx_y + CTX_H/2 - 0.1) .. ";" .. run_label .. "]")
+        table.insert(fs, "tooltip[ctx_run_indicator;Last execution output is available and will be included in Generate context if non-empty]")
+    end
+
     -- ── Prompt Row ────────────────────────────────────────────
-    -- Layout: [Prompt field ............] [☐ Guide] [Generate]
-    local gen_w   = 2.2
-    local guide_w = 3.2   -- checkbox + label
-    local pr_w    = W - PAD * 4 - guide_w - gen_w
+    -- Layout: [Prompt field ......................] [Generate]
+    local gen_w = 2.2
+    local pr_w  = W - PAD * 3 - gen_w
 
     table.insert(fs, "field[" .. PAD .. "," .. prompt_y .. ";" .. pr_w .. "," .. PROMPT_H
         .. ";prompt_input;;" .. prompt_esc .. "]")
@@ -366,15 +413,7 @@ function M.show(name)
     table.insert(fs, "style[prompt_input;bgcolor=#1e1e1e;textcolor=#e8e8e8]")
     table.insert(fs, "tooltip[prompt_input;Describe what code to generate, then click Generate]")
 
-    -- Naming guide toggle checkbox
-    local guide_on = session.guiding_active == true
-    local cx = PAD + pr_w + PAD
-    local guide_color = guide_on and "#1a3a1a" or "#252525"
-    table.insert(fs, "style[guide_toggle;bgcolor=" .. guide_color .. ";textcolor=#aaffaa]")
-    table.insert(fs, "checkbox[" .. cx .. "," .. (prompt_y + 0.15) .. ";guide_toggle;llm_connect: guide;" .. (guide_on and "true" or "false") .. "]")
-    table.insert(fs, "tooltip[guide_toggle;Inject naming convention guide into Generate calls.\nTeaches the LLM to use the llm_connect: prefix for registrations.]")
-
-    local gx = cx + guide_w + PAD
+    local gx = PAD + pr_w + PAD
     if can_execute(name) then
         table.insert(fs, "style[generate;bgcolor=#2a4a6a;textcolor=#ffffff]")
     else
@@ -402,6 +441,15 @@ function M.show(name)
     if session.pending_proposal then
         status = status .. "  |  ★ PROPOSAL READY – click Apply"
     end
+    -- Show active context flags in status bar
+    local ctx_flags = {}
+    if session.guiding_active then ctx_flags[#ctx_flags+1] = "guide" end
+    if session.assets_active  then ctx_flags[#ctx_flags+1] = "assets" end
+    if session.api_level      then ctx_flags[#ctx_flags+1] = "api:" .. session.api_level end
+    if session.last_run_output then ctx_flags[#ctx_flags+1] = "run-output" end
+    if #ctx_flags > 0 then
+        status = status .. "  |  ctx: " .. table.concat(ctx_flags, ", ")
+    end
     table.insert(fs, "label[" .. PAD .. "," .. (sy + 0.22) .. ";" .. status .. "]")
 
     core.show_formspec(name, "llm_connect:ide", table.concat(fs))
@@ -412,6 +460,18 @@ end
 -- ======================================================
 
 function M.handle_fields(name, formname, fields)
+    -- Forward to asset picker
+    if formname:match("^llm_connect:ide_asset_picker") then
+        local ap = _G.ide_asset_picker
+        if ap then
+            ap.handle_fields(name, formname, fields)
+            if fields.close_picker or fields.quit then
+                M.show(name)
+            end
+        end
+        return true
+    end
+
     if not formname:match("^llm_connect:ide") then return false end
     if not can_use_ide(name) then return true end
 
@@ -419,13 +479,8 @@ function M.handle_fields(name, formname, fields)
     local updated = false
 
     -- Capture live editor/field state
-    if fields.code           then session.code         = fields.code; session.last_modified = os.time() end
-    if fields.prompt_input   then session.last_prompt  = fields.prompt_input end
-    if fields.guide_toggle ~= nil then
-        session.guiding_active = (fields.guide_toggle == "true")
-        M.show(name)
-        return true
-    end
+    if fields.code           then session.code        = fields.code; session.last_modified = os.time() end
+    if fields.prompt_input   then session.last_prompt = fields.prompt_input end
     if fields.filename_input and fields.filename_input ~= "" then
         local fn = fields.filename_input:match("^%s*(.-)%s*$")
         if fn ~= "" then
@@ -434,12 +489,43 @@ function M.handle_fields(name, formname, fields)
         end
     end
 
-    -- Dropdown: track selection
+    -- ── Context toggles ───────────────────────────────────────
+    if fields.guide_toggle ~= nil then
+        session.guiding_active = (fields.guide_toggle == "true")
+        M.show(name); return true
+    end
+
+    if fields.assets_toggle ~= nil then
+        session.assets_active = (fields.assets_toggle == "true")
+        M.show(name); return true
+    end
+
+    if fields.assets_open then
+        local ap = _G.ide_asset_picker
+        if ap then
+            ap.show(name)
+        else
+            core.chat_send_player(name, "[LLM] Asset picker not available.")
+        end
+        return true
+    end
+
+    if fields.api_slim_toggle ~= nil then
+        -- Toggle: if already slim → off; else → slim (also turns off full)
+        session.api_level = (fields.api_slim_toggle == "true") and "slim" or nil
+        M.show(name); return true
+    end
+
+    if fields.api_full_toggle ~= nil then
+        -- Toggle: if already full → off; else → full (also turns off slim)
+        session.api_level = (fields.api_full_toggle == "true") and "full" or nil
+        M.show(name); return true
+    end
+
+    -- ── Dropdown ─────────────────────────────────────────────
     if fields.file_dropdown then
         local val = fields.file_dropdown
         if val ~= "(no files)" and val ~= "" then
-            -- index_event=false → val is the filename directly
-            -- Fallback: if val is a number string, resolve via file_list index
             local as_num = tonumber(val)
             if as_num and session.file_list and session.file_list[as_num] then
                 val = session.file_list[as_num]
@@ -455,7 +541,7 @@ function M.handle_fields(name, formname, fields)
         if target == "" or target == "(no files)" then
             session.output = "Please select a file in the dropdown first."
         else
-            local path    = ensure_snippets_dir() .. DIR_DELIM .. target
+            local path    = ensure_snippets_dir() .. "/" .. target
             local content, read_err = read_file(path)
             if content then
                 session.code          = content
@@ -464,9 +550,7 @@ function M.handle_fields(name, formname, fields)
                 session.output        = "✓ Loaded: " .. target
             else
                 session.output = "✗ Could not read: " .. target
-                    .. "\nPath: " .. path
                     .. (read_err and ("\nError: " .. tostring(read_err)) or "")
-                -- Remove from index if file is gone
                 index_remove(target)
                 session.file_list = list_snippet_files()
             end
@@ -477,11 +561,11 @@ function M.handle_fields(name, formname, fields)
         local fn = session.filename
         if fn == "" then fn = "untitled.lua" end
         if not fn:match("%.lua$") then fn = fn .. ".lua" end
-        fn = fn:match("([^/\\]+)$") or fn   -- prevent path traversal
+        fn = fn:match("([^/\\]+)$") or fn
         session.filename = fn
 
-        local path      = ensure_snippets_dir() .. DIR_DELIM .. fn
-        local ok, err   = write_file(path, session.code)
+        local path    = ensure_snippets_dir() .. "/" .. fn
+        local ok, err = write_file(path, session.code)
         if ok then
             index_add(fn)
             session.output        = "✓ Saved: " .. fn
@@ -617,15 +701,56 @@ function M.generate_code(name)
     session.output = "Generating code… (please wait)"
     M.show(name)
 
-    local p       = get_prompts()
+    local p = get_prompts()
 
-    -- Append naming guide if toggle is active in session
+    -- ── Guide addendum ────────────────────────────────────────
     local guide_addendum = ""
     if session.guiding_active and p.NAMING_GUIDE then
         guide_addendum = p.NAMING_GUIDE
     end
 
-    local sys_msg = p.CODE_GENERATOR .. guide_addendum .. "\n\nUser request: " .. user_req
+    -- ── Build context block ───────────────────────────────────
+    local player     = core.get_player_by_name(name)
+    local player_pos = player and player:get_pos() or nil
+
+    -- mod list: only if setting enabled
+    local mod_list = nil
+    if core.settings:get_bool("llm_ide_context_mod_list", true) then
+        local mods = core.get_modnames()
+        if mods and #mods > 0 then
+            mod_list = table.concat(mods, ", ")
+        end
+    end
+
+    -- asset context: only if toggle is on and picker available
+    local asset_context = nil
+    if session.assets_active then
+        local ap = _G.ide_asset_picker
+        if ap and ap.build_asset_context then
+            asset_context = ap.build_asset_context(name)
+        end
+    end
+
+    -- last run output: always included if available (was set by run_code)
+    local last_output = session.last_run_output
+
+    local ctx_block = p.build_context({
+        filename      = session.filename,
+        player_pos    = player_pos,
+        mod_list      = mod_list,
+        asset_context = asset_context,
+        last_output   = last_output,
+        api_level     = session.api_level,
+    })
+
+    -- ── Assemble system message ───────────────────────────────
+    local sys_msg = p.CODE_GENERATOR .. guide_addendum
+    if ctx_block then
+        sys_msg = sys_msg .. "\n\n" .. ctx_block
+    end
+    sys_msg = sys_msg .. "\n\nUser request: " .. user_req
+
+    -- ── API call ──────────────────────────────────────────────
     get_llm_api().code(sys_msg, session.code, function(result)
         if result.success and result.content then
             local gen = result.content
@@ -653,17 +778,23 @@ function M.run_code(name)
             .. (res.output ~= "" and res.output or "(no output)")
         if res.return_value then out = out .. "\n\nReturn: " .. tostring(res.return_value) end
         if res.persisted    then out = out .. "\n\n→ Startup file updated (restart needed)" end
-        session.output = out
+        session.output          = out
+        session.last_run_output = out   -- store for context injection
     else
-        session.output = "✗ Execution failed:\n" .. (res.error or "Unknown error")
+        local err_out = "✗ Execution failed:\n" .. (res.error or "Unknown error")
         if res.output and res.output ~= "" then
-            session.output = session.output .. "\n\nOutput before error:\n" .. res.output
+            err_out = err_out .. "\n\nOutput before error:\n" .. res.output
         end
+        session.output          = err_out
+        session.last_run_output = err_out   -- errors are especially useful as context
     end
     M.show(name)
 end
 
+-- ======================================================
 -- Cleanup
+-- ======================================================
+
 core.register_on_leaveplayer(function(player)
     sessions[player:get_player_name()] = nil
 end)

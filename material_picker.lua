@@ -1,31 +1,31 @@
 -- material_picker.lua  v2.0
--- Inventory-style material selection for the LLM WorldEdit context
+-- Inventar-style Materialauswahl für LLM WorldEdit Kontext
 --
--- UI: Tiles with item icons (item_image) + colored highlight when active
---     Search filter at the top, Toggle-All button, Remove-All button
---     Tiles are buttons → click toggles selection
+-- UI: Kacheln mit Item-Icons (item_image) + farbiger Markierung wenn aktiv
+--     Suchfilter oben, Toggle-All Button, Remove-All Button
+--     Kacheln sind Buttons → Klick togglet Selektion
 --
--- PUBLIC API (used by chat_gui.lua / llm_worldedit.lua):
---   M.get_materials(player_name)           → sorted list of node name strings
+-- PUBLIC API (genutzt von chat_gui.lua / llm_worldedit.lua):
+--   M.get_materials(player_name)           → sortierte Liste von Node-Strings
 --   M.has_materials(player_name)           → bool
---   M.build_material_context(player_name)  → string for LLM system prompt
---   M.show(player_name)                    → open formspec
+--   M.build_material_context(player_name)  → String für LLM-Systemprompt
+--   M.show(player_name)                    → Formspec öffnen
 --   M.handle_fields(player_name, formname, fields) → bool
 
 local core = core
 local M    = {}
 
 -- ============================================================
--- Configuration
+-- Konfiguration
 -- ============================================================
 
-local COLS        = 8     -- tiles per row
-local TILE_SIZE   = 1.4   -- tile width/height in formspec units
-local TILE_PAD    = 0.08  -- spacing between tiles
-local MAX_NODES   = 128   -- max candidates to render
+local COLS        = 8     -- Kacheln pro Zeile
+local TILE_SIZE   = 1.4   -- Breite/Höhe einer Kachel in Formspec-Einheiten
+local TILE_PAD    = 0.08  -- Abstand zwischen Kacheln
+local MAX_NODES   = 128   -- max. Kandidaten die gerendert werden
 
 -- ============================================================
--- Session state
+-- Session-State
 -- ============================================================
 
 local sessions = {}
@@ -35,7 +35,7 @@ local function get_session(name)
         sessions[name] = {
             materials  = {},   -- [node_name] = true
             filter     = "",
-            page       = 1,    -- current page (pagination)
+            page       = 1,    -- aktuelle Seite (Paginierung)
         }
     end
     return sessions[name]
@@ -78,7 +78,7 @@ function M.build_material_context(player_name)
 end
 
 -- ============================================================
--- Registry filter
+-- Registry-Filter
 -- ============================================================
 
 local function build_candidate_list(filter)
@@ -103,10 +103,10 @@ local function build_candidate_list(filter)
 end
 
 -- ============================================================
--- Formspec builder
+-- Formspec Builder
 -- ============================================================
 
--- Calculates page count
+-- Berechnet Seitenzahl
 local function get_page_info(total, per_page, current_page)
     local total_pages = math.max(1, math.ceil(total / per_page))
     current_page = math.max(1, math.min(current_page, total_pages))
@@ -115,7 +115,7 @@ local function get_page_info(total, per_page, current_page)
     return current_page, total_pages, first, last
 end
 
-local ITEMS_PER_PAGE = COLS * 6  -- 6 rows = 48 tiles per page
+local ITEMS_PER_PAGE = COLS * 6  -- 6 Zeilen = 48 Kacheln pro Seite
 
 function M.show(player_name)
     local sess       = get_session(player_name)
@@ -125,12 +125,12 @@ function M.show(player_name)
 
     local page, total_pages, first, last =
         get_page_info(total, ITEMS_PER_PAGE, sess.page)
-    sess.page = page  -- write corrected page back
+    sess.page = page  -- korrigierte Seite zurückschreiben
 
     local selected_count = 0
     for _ in pairs(sess.materials) do selected_count = selected_count + 1 end
 
-    -- ── Dimensions ────────────────────────────────────────
+    -- ── Dimensionen ────────────────────────────────────────
     local W       = COLS * (TILE_SIZE + TILE_PAD) + 0.5
     local HDR_H   = 0.9
     local SRCH_H  = 0.7
@@ -158,7 +158,7 @@ function M.show(player_name)
 
     local y = HDR_H + PAD
 
-    -- ── Search field ────────────────────────────────────────
+    -- ── Suchfeld ────────────────────────────────────────────
     local field_w = W - PAD * 2 - 2.6
     table.insert(fs, "field[" .. PAD .. "," .. y .. ";" .. string.format("%.2f", field_w) .. "," .. SRCH_H
         .. ";filter;;" .. core.formspec_escape(filter) .. "]")
@@ -169,7 +169,7 @@ function M.show(player_name)
         .. ";2.4," .. SRCH_H .. ";do_filter;⟳ Search]")
     y = y + SRCH_H + PAD
 
-    -- ── Info row + Toggle-All ─────────────────────────────
+    -- ── Info-Zeile + Toggle-All ─────────────────────────────
     local info_str
     if total == 0 then
         info_str = "No nodes found"
@@ -178,7 +178,7 @@ function M.show(player_name)
     end
     table.insert(fs, "label[" .. PAD .. "," .. (y + 0.05) .. ";" .. core.formspec_escape(info_str) .. "]")
 
-    -- Toggle-All button (select/deselect all on this page)
+    -- Toggle-All Button (alle auf dieser Seite ein/aus)
     local page_nodes = {}
     for i = first, last do
         table.insert(page_nodes, candidates[i])
@@ -194,8 +194,8 @@ function M.show(player_name)
         .. ";3.5," .. INFO_H+0.1 .. ";toggle_page;" .. toggle_label .. "]")
     y = y + INFO_H + PAD
 
-    -- ── Tile grid ────────────────────────────────────────
-    -- Each tile = item_image_button (icon) + colored background when active
+    -- ── Kachel-Grid ────────────────────────────────────────
+    -- Jede Kachel = item_image_button (Icon) + farbiger Hintergrund wenn aktiv
     local col = 0
     local row = 0
     local IMG  = TILE_SIZE - 0.25
@@ -207,13 +207,13 @@ function M.show(player_name)
 
         local is_sel = sess.materials[node_name] == true
 
-        -- Background box: green if selected, dark if not
+        -- Hintergrund-Box: grün wenn selektiert, dunkel wenn nicht
         local bg_color = is_sel and "#1a3a1a" or "#1a1a1a"
         table.insert(fs, "box[" .. string.format("%.2f,%.2f;%.2f,%.2f", tx, ty, TILE_SIZE, TILE_SIZE)
             .. ";" .. bg_color .. "]")
 
-        -- Item image button (clickable, shows icon)
-        -- button name encodes the candidate index: "tile_N"
+        -- Item-Image-Button (klickbar, zeigt Icon)
+        -- button-name enkodiert den Kandidaten-Index: "tile_N"
         local btn_name = "tile_" .. tostring((page - 1) * ITEMS_PER_PAGE + idx)
         -- item_image_button[x,y;w,h;item;name;label]
         table.insert(fs, "item_image_button["
@@ -221,14 +221,14 @@ function M.show(player_name)
             .. ";" .. core.formspec_escape(node_name)
             .. ";" .. btn_name .. ";]")
 
-        -- Checkmark label top-right when selected
+        -- Checkmark-Label oben rechts wenn selektiert
         if is_sel then
             table.insert(fs, "label["
                 .. string.format("%.2f,%.2f", tx + TILE_SIZE - 0.38, ty + 0.18)
                 .. ";§(c=#00ff00)✔]")
         end
 
-        -- Tooltip: node name
+        -- Tooltip: Node-Name
         local def = core.registered_nodes[node_name]
         local desc = (def and def.description and def.description ~= "")
             and def.description or node_name
@@ -255,7 +255,7 @@ function M.show(player_name)
     end
     y = y + NAV_H + PAD
 
-    -- ── Bottom buttons ──────────────────────────────────────
+    -- ── Bottom Buttons ──────────────────────────────────────
     local b_w = (W - PAD * 3) / 2
     table.insert(fs, "style[clear_all;bgcolor=#3a1a1a;textcolor=#ff8888]")
     table.insert(fs, "button[" .. PAD .. "," .. y .. ";" .. string.format("%.2f", b_w) .. "," .. BTN_H
@@ -269,7 +269,7 @@ function M.show(player_name)
 end
 
 -- ============================================================
--- Formspec handler
+-- Formspec Handler
 -- ============================================================
 
 function M.handle_fields(player_name, formname, fields)
@@ -281,19 +281,19 @@ function M.handle_fields(player_name, formname, fields)
     local candidates = build_candidate_list(sess.filter)
     local total      = #candidates
 
-    -- Update filter (live)
+    -- Filter aktualisieren (live)
     if fields.filter ~= nil then
         sess.filter = fields.filter
     end
 
-    -- ── Search / filter ──────────────────────────────────
+    -- ── Search / Filter ──────────────────────────────────
     if fields.do_filter or fields.key_enter_field == "filter" then
         sess.page = 1
         M.show(player_name)
         return true
     end
 
-    -- ── Pagination ──────────────────────────────────────
+    -- ── Paginierung ──────────────────────────────────────
     local page, total_pages = get_page_info(total, ITEMS_PER_PAGE, sess.page)
 
     if fields.page_prev then
@@ -308,10 +308,10 @@ function M.handle_fields(player_name, formname, fields)
         return true
     end
 
-    -- ── Toggle page ──────────────────────────────────────
+    -- ── Toggle Page ──────────────────────────────────────
     if fields.toggle_page then
         local _, _, first, last = get_page_info(total, ITEMS_PER_PAGE, sess.page)
-        -- Check if all are selected
+        -- Prüfen ob alle selektiert
         local all_sel = true
         for i = first, last do
             if not sess.materials[candidates[i]] then all_sel = false; break end
@@ -328,22 +328,22 @@ function M.handle_fields(player_name, formname, fields)
         return true
     end
 
-    -- ── Clear all ────────────────────────────────────────
+    -- ── Clear All ────────────────────────────────────────
     if fields.clear_all then
         sess.materials = {}
         M.show(player_name)
         return true
     end
 
-    -- ── Close / done ─────────────────────────────────────
+    -- ── Close / Done ─────────────────────────────────────
     if fields.close_picker or fields.close_and_back or fields.quit then
-        -- Signal to chat_gui: picker closed → re-open chat GUI
-        -- (handled in handle_fields of chat_gui.lua / init.lua)
+        -- Signalisierung ans chat_gui: Picker schließen → Chat-GUI wieder öffnen
+        -- (wird in handle_fields von chat_gui.lua / init.lua gehandelt)
         return true
     end
 
-    -- ── Tile buttons: tile_N ────────────────────────────
-    -- Format: tile_<global_index>  (1-based across all pages)
+    -- ── Kachel-Buttons: tile_N ────────────────────────────
+    -- Format: tile_<global_index>  (1-basiert über alle Seiten)
     for field_name, _ in pairs(fields) do
         local global_idx = field_name:match("^tile_(%d+)$")
         if global_idx then

@@ -124,7 +124,7 @@ function M.show(name)
     table.insert(fs, "checkbox[" .. PAD .. "," .. y .. ";wea_enabled;" .. core.formspec_escape(wea_label) .. ";" .. (wea_val and "true" or "false") .. "]")
     y = y + 0.55 + PAD
 
-    -- 4 buttons evenly distributed: Save, Reload, Test, Close
+    -- 4 Buttons gleichmaessig verteilt: Save, Reload, Test, Close
     local btn_count   = 4
     local btn_spacing = 0.2
     local btn_w       = (W - PAD * 2 - btn_spacing * (btn_count - 1)) / btn_count
@@ -240,7 +240,7 @@ function M.handle_fields(name, formname, fields)
         return true
 
     elseif fields.close or fields.quit then
-        -- Return to chat_gui
+        -- Zurueck zur chat_gui
         if _G.chat_gui then
             _G.chat_gui.show(name)
         else

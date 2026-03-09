@@ -2,7 +2,7 @@
 # LLM Connect - Luanti/Minetest Mod Settings
 # ===========================================================================
 # LLM Connection, Chat, IDE, WorldEdit & Prompt Behavior
-# Version: 0.9.0
+# Version: 0.9.0-dev
 # ===========================================================================
 
 # === LLM API Base Settings ===
@@ -58,21 +58,49 @@ llm_ide_live_suggestions       (Live suggestions – not yet implemented)   bool
 llm_ide_whitelist_enabled      (Sandbox security whitelist)               bool   true
 
 # Send last run output to LLM so it can self-correct after a failed execution.
+# This is always included when available; this setting disables it globally.
 llm_ide_include_run_output     (Send last run output for self-correction) bool   true
 
 # Max lines of code sent as context. Prevents token overflow. 0 = no limit.
 llm_ide_max_code_context       (Max code lines sent to LLM, 0=unlimited) int    300   0   2000
 
 
-# === IDE – Guiding Prompts ===
+# === IDE – Context Injection ===
 
-# Inject naming-convention guide into IDE LLM calls.
+# Inject naming-convention guide into IDE Generate calls.
 # Teaches the model that registrations must use the "llm_connect:" prefix.
 llm_ide_naming_guide           (Inject naming convention guide)           bool   true
 
-# Inject context about active mods and nodes into Generate calls.
+# Send the list of active mods in IDE Generate context.
+# Helps the LLM reference correct mod names and dependencies.
 llm_ide_context_mod_list       (Send mod list in IDE context)             bool   true
-llm_ide_context_node_sample    (Send node sample in IDE context)          bool   true
+
+# Send player position in IDE Generate context.
+# Useful for position-aware code generation (e.g. place node near player).
+llm_ide_context_player_pos     (Send player position in IDE context)      bool   true
+
+
+# === IDE – Asset Picker ===
+
+# Controls which asset types are available in the IDE Asset Picker.
+# Disabling a type hides that tab and excludes it from context output.
+llm_ide_asset_nodes            (Enable Nodes tab in IDE Asset Picker)     bool   true
+llm_ide_asset_items            (Enable Items/Tools tab in IDE Asset Picker) bool  true
+llm_ide_asset_sounds           (Enable Sounds tab in IDE Asset Picker)    bool   true
+
+# Max number of assets that can be selected at once.
+# Prevents accidental token budget exhaustion from very large selections.
+llm_ide_asset_max_selected     (Max assets selectable in IDE picker)      int    32    1   128
+
+
+# === IDE – API Reference Injection ===
+
+# Default API injection level when the IDE is opened.
+# Can be overridden per-session via the toggle buttons in the IDE UI.
+#   none  – no API reference injected (default, saves tokens)
+#   slim  – ~400 tokens: most-used functions only
+#   full  – ~2000 tokens: comprehensive reference (use with care)
+llm_ide_api_default_level      (Default API injection level)              enum   none   none,slim,full
 
 
 # === WorldEdit ===
@@ -87,6 +115,7 @@ llm_we_snapshot_before_exec    (Snapshot before each WE execution)        bool  
 # - llm_timeout_*: 0 = inherit global llm_timeout
 # - llm_language "en" = no language instruction injected (saves tokens)
 # - llm_ide_* settings only affect the Smart Lua IDE
+# - llm_ide_api_default_level can be overridden live in the IDE UI (per session)
 # - llm_we_* settings only affect WorldEdit agency mode
 # - Timeout/config changes take effect after /llm_config reload or restart
 # ===========================================================================

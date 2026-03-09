@@ -1,4 +1,3 @@
-
 # LLM Connect
 
 **A Luanti (formerly Minetest) mod that integrates Large Language Models (LLMs) directly into the game with an AI-powered Lua IDE and building assistant.**
@@ -55,7 +54,8 @@ Capabilities include:
 - semantic code explanation
 - automated refactoring
 - code analysis
-- interactive editing interface
+- interactive editing interface with file manager
+- save/load Lua snippets per world
 - integration with the game environment
 
 Developers can experiment with Lua snippets directly inside the game.
@@ -117,11 +117,13 @@ Access to AI features is controlled through Luanti privileges.
 | Privilege | Description |
 |-----------|-------------|
 | `llm` | Basic AI chat access |
-| `llm_ide` | Access to the Smart Lua IDE |
-| `llm_dev` | Sandbox Lua execution |
-| `llm_root` | Full administrative control |
+| `llm_dev` | Smart Lua IDE + sandboxed code execution |
+| `llm_worldedit` | WorldEdit agency (Single + Loop mode, material picker) |
+| `llm_root` | Full administrative access — implies all privileges above + config + unrestricted execution |
 
 Server operators should grant privileges carefully.
+
+> **Note:** `llm_root` is a superrole. Granting it implies `llm`, `llm_dev`, and `llm_worldedit`.
 
 ---
 
@@ -151,9 +153,7 @@ Supported providers include:
 Install via ContentDB:
 
 ```
-
 Content → Mods → LLM Connect
-
 ```
 
 ---
@@ -165,17 +165,13 @@ Content → Mods → LLM Connect
 3. Ensure the folder name is:
 
 ```
-
 llm_connect
-
 ```
 
 4. Enable HTTP API in `minetest.conf`
 
 ```
-
 secure.http_mods = llm_connect
-
 ```
 
 Restart the server.
@@ -186,42 +182,43 @@ Restart the server.
 
 Configuration can be done via:
 
-- `/llm_config` GUI
+- `/llm` → Config button (requires `llm_root`)
 - `minetest.conf`
 
 Example:
 
 ```
-
 llm_api_key = your-api-key
-llm_api_url = [https://api.openai.com/v1/chat/completions](https://api.openai.com/v1/chat/completions)
+llm_api_url = https://api.openai.com/v1/chat/completions
 llm_model = gpt-4
 
 llm_temperature = 0.7
 llm_max_tokens = 4000
 llm_timeout = 120
-
 ```
 
 Context options:
 
 ```
-
 llm_context_send_player_pos = true
 llm_context_send_mod_list = true
-llm_context_send_materials = true
-
+llm_context_send_server_info = true
+llm_context_send_commands = true
+llm_context_send_materials = false
 ```
 
 ---
 
 ## 🎮 Commands
 
-| Command | Description |
-|-------|-------------|
-| `/llm` | Open AI chat |
-| `/llm_ide` | Open Smart Lua IDE |
-| `/llm_config` | Open configuration interface |
+| Command | Description | Required Privilege |
+|---------|-------------|-------------------|
+| `/llm` | Open the AI chat interface | `llm` |
+| `/llm_msg <message>` | Send a direct message to the LLM (no GUI) | `llm` |
+| `/llm_undo` | Undo the last WorldEdit agency operation | `llm` |
+| `/llm_reload_startup` | Reload `llm_startup.lua` at runtime (⚠️ no new registrations) | `llm_root` |
+
+> The **Smart Lua IDE** and **Config GUI** are opened via buttons inside the `/llm` chat interface, not via separate commands.
 
 ---
 
@@ -243,9 +240,7 @@ Server administrators should still review generated code carefully.
 See:
 
 ```
-
 ROADMAP_090.md
-
 ```
 
 for planned improvements and upcoming features.
@@ -292,8 +287,3 @@ https://www.luanti.org/
 ---
 
 **LLM Connect – Bringing AI-assisted development into Luanti.**
-```
-
-
-
-

@@ -95,21 +95,29 @@ elseif not we_agency.is_available() then
     -- so WE buttons may still appear if worldedit loads later (should not happen with optional_depends)
 end
 
--- === Load material picker ===
+-- === Load material picker (WorldEdit context) ===
 local picker_ok, material_picker = pcall(dofile, mod_dir .. "/material_picker.lua")
 if not picker_ok then
     core.log("warning", "[llm_connect] material_picker.lua not loaded: " .. tostring(material_picker))
     material_picker = nil
 end
 
+-- === Load IDE asset picker ===
+local ide_ap_ok, ide_asset_picker = pcall(dofile, mod_dir .. "/ide_asset_picker.lua")
+if not ide_ap_ok then
+    core.log("warning", "[llm_connect] ide_asset_picker.lua not loaded: " .. tostring(ide_asset_picker))
+    ide_asset_picker = nil
+end
+
 -- === Make modules globally available ===
-_G.chat_gui        = chat_gui
-_G.llm_api         = llm_api
-_G.executor        = executor
-_G.we_agency       = we_agency
-_G.material_picker = material_picker
-_G.ide_gui         = ide_gui
-_G.config_gui      = config_gui
+_G.chat_gui         = chat_gui
+_G.llm_api          = llm_api
+_G.executor         = executor
+_G.we_agency        = we_agency
+_G.material_picker  = material_picker
+_G.ide_asset_picker = ide_asset_picker
+_G.ide_gui          = ide_gui
+_G.config_gui       = config_gui
 
 -- === Startup code loader ===
 local startup_file = core.get_worldpath() .. "/llm_startup.lua"
@@ -177,7 +185,7 @@ core.register_chatcommand("llm_undo", {
 })
 
 core.register_chatcommand("llm_reload_startup", {
-    description = "Reload llm_startup.lua (WARNING: Cannot register new items!)",
+    description = "Reload llm_startup.lua at runtime (WARNING: Cannot register new items!)",
     privs = {llm_root = true},
     func = function(name)
         core.log("action", "[llm_connect] Manual startup reload triggered by " .. name)
@@ -188,14 +196,14 @@ core.register_chatcommand("llm_reload_startup", {
             f:close()
             local ok, err = pcall(dofile, startup_file)
             if not ok then
-                core.chat_send_player(name, "[LLM] x Reload failed: " .. tostring(err))
+                core.chat_send_player(name, "[LLM] ✗ Reload failed: " .. tostring(err))
                 return false, "Reload failed"
             else
-                core.chat_send_player(name, "[LLM] Reloaded (restart needed for registrations)")
+                core.chat_send_player(name, "[LLM] ✓ Reloaded (restart needed for registrations)")
                 return true, "Code reloaded"
             end
         else
-            core.chat_send_player(name, "[LLM] x No llm_startup.lua found")
+            core.chat_send_player(name, "[LLM] ✗ No llm_startup.lua found")
             return false, "File not found"
         end
     end,
@@ -209,6 +217,7 @@ core.register_on_player_receive_fields(function(player, formname, fields)
     if formname:match("^llm_connect:chat") or formname:match("^llm_connect:material_picker") then
         return chat_gui.handle_fields(name, formname, fields)
     elseif formname:match("^llm_connect:ide") then
+        -- ide_gui handles both llm_connect:ide and llm_connect:ide_asset_picker
         return ide_gui.handle_fields(name, formname, fields)
     elseif formname:match("^llm_connect:config") then
         return config_gui.handle_fields(name, formname, fields)
@@ -218,7 +227,7 @@ core.register_on_player_receive_fields(function(player, formname, fields)
 end)
 
 -- === Logging ===
-core.log("action", "[llm_connect] LLM Connect v0.9.0 loaded")
+core.log("action", "[llm_connect] LLM Connect v0.9.0-dev loaded")
 if llm_api.is_configured() then
     core.log("action", "[llm_connect] LLM API ready - model: " .. tostring(llm_api.config.model))
 else

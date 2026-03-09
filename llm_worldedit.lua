@@ -47,7 +47,7 @@ end
 
 function M.is_available()
     if type(worldedit) ~= "table" then return false end
-    -- Extended check – different WE versions use different function names
+    -- Erweiterte Prüfung – verschiedene WE-Versionen haben unterschiedliche Funktionsnamen
     return type(worldedit.set) == "function"
         or type(worldedit.set_node) == "function"
         or type(worldedit.manip_helpers) == "table"
