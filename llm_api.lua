@@ -28,7 +28,6 @@ M.config = {
     ide_naming_guide        = true,
     ide_include_run_output  = true,
     ide_context_mod_list    = true,
-    ide_context_node_sample = true,
     ide_max_code_context    = 300,
     -- worldedit
     we_max_iterations       = 6,
@@ -84,7 +83,6 @@ function M.reload_config()
     M.config.ide_naming_guide        = core.settings:get_bool("llm_ide_naming_guide", true)
     M.config.ide_include_run_output  = core.settings:get_bool("llm_ide_include_run_output", true)
     M.config.ide_context_mod_list    = core.settings:get_bool("llm_ide_context_mod_list", true)
-    M.config.ide_context_node_sample = core.settings:get_bool("llm_ide_context_node_sample", true)
     M.config.ide_max_code_context    = tonumber(core.settings:get("llm_ide_max_code_context")) or 300
 
     M.config.we_max_iterations = tonumber(core.settings:get("llm_we_max_iterations")) or 6

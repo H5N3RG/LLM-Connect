@@ -179,9 +179,11 @@ local sessions = {}
 
 local DEFAULT_CODE = [[-- Welcome to Smart Lua IDE!
 -- Write your Luanti mod code here.
+-- All registrations must use the "llm_connect:" prefix.
 
-core.register_node("example:test_node", {
-    description = "Test Node",
+-- Example: register a simple node
+core.register_node("llm_connect:my_node", {
+    description = "My Node",
     tiles = {"default_stone.png"},
     groups = {cracky = 3},
 })
@@ -192,6 +194,7 @@ local function get_session(name)
         sessions[name] = {
             -- editor state
             code             = DEFAULT_CODE,
+            code_rev         = 0,       -- incremented on external code changes to bust textarea cache
             output           = "Ready!\nUse the toolbar buttons or type a prompt and click Generate.",
             filename         = "untitled.lua",
             pending_proposal = nil,
@@ -241,6 +244,7 @@ function M.show(name)
     local session = get_session(name)
     session.file_list = list_snippet_files()
 
+    local code_field = "code_" .. (session.code_rev or 0)
     local code_esc   = core.formspec_escape(session.code or "")
     local output_esc = core.formspec_escape(session.output or "")
     local fn_esc     = core.formspec_escape(session.filename or "untitled.lua")
@@ -301,7 +305,8 @@ function M.show(name)
     -- Auto-Fix: only active after a failed run
     if session.run_failed then
         table.insert(fs, "style[auto_fix;bgcolor=#3a1a00;textcolor=#ffcc44]")
-        add_btn("auto_fix", "⟳ Auto-Fix", "AI debug loop: auto-correct and re-run (max 3 iters)", true)
+        local af_iters = tonumber(core.settings:get("llm_ide_auto_fix_iterations")) or 3
+        add_btn("auto_fix", "⟳ Auto-Fix", ("AI debug loop: auto-correct and re-run (max %d iter(s))"):format(af_iters), true)
     else
         add_btn("auto_fix", "Auto-Fix", "Run code first to enable auto-fix on error", false)
     end
@@ -436,7 +441,7 @@ function M.show(name)
     -- ── Editor & Output ───────────────────────────────────────
     table.insert(fs, "style[code;bgcolor=#1e1e1e;textcolor=#e8e8e8;border=true]")
     table.insert(fs, "textarea[" .. PAD .. "," .. work_y .. ";" .. (col_w - PAD) .. "," .. work_h
-        .. ";code;;" .. code_esc .. "]")
+        .. ";" .. code_field .. ";;" .. code_esc .. "]")
 
     table.insert(fs, "style[output;bgcolor=#181818;textcolor=#cccccc;border=true]")
     table.insert(fs, "textarea[" .. (PAD + col_w + PAD) .. "," .. work_y .. ";" .. (col_w - PAD) .. "," .. work_h
@@ -487,7 +492,10 @@ function M.handle_fields(name, formname, fields)
     local updated = false
 
     -- Capture live editor/field state
-    if fields.code           then session.code        = fields.code; session.last_modified = os.time() end
+    -- Sync editor content: field name is dynamic (code_rev based), check any "code_*" field
+    for k, v in pairs(fields) do
+        if k:match("^code_") then session.code = v; session.last_modified = os.time(); break end
+    end
     if fields.prompt_input   then session.last_prompt = fields.prompt_input end
     if fields.filename_input and fields.filename_input ~= "" then
         local fn = fields.filename_input:match("^%s*(.-)%s*$")
@@ -553,6 +561,7 @@ function M.handle_fields(name, formname, fields)
             local content, read_err = read_file(path)
             if content then
                 session.code          = content
+                session.code_rev      = (session.code_rev or 0) + 1
                 session.filename      = target
                 session.last_modified = os.time()
                 session.output        = "✓ Loaded: " .. target
@@ -587,6 +596,7 @@ function M.handle_fields(name, formname, fields)
 
     elseif fields.file_new and is_root(name) then
         session.code             = DEFAULT_CODE
+        session.code_rev         = (session.code_rev or 0) + 1
         session.filename         = "untitled.lua"
         session.last_modified    = os.time()
         session.pending_proposal = nil
@@ -615,6 +625,7 @@ function M.handle_fields(name, formname, fields)
     elseif fields.apply then
         if session.pending_proposal then
             session.code             = session.pending_proposal
+            session.code_rev         = (session.code_rev or 0) + 1
             session.pending_proposal = nil
             session.last_modified    = os.time()
             session.output           = "✓ Applied proposal to editor."
@@ -847,7 +858,8 @@ function M.auto_fix(name)
         on_done = function(result, final_code)
             -- Update code in editor if it changed
             if final_code ~= original_code then
-                session.code = final_code
+                session.code     = final_code
+                session.code_rev = (session.code_rev or 0) + 1
             end
 
             local summary

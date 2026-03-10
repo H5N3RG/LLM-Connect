@@ -35,70 +35,82 @@ The following features are already implemented:
 
 ---
 
-## In Progress
+## IDE Context System ✓
 
-These features are currently under active development:
+All planned context elements are fully implemented:
 
-### IDE Context System
+- Active mods list injected into IDE generate calls
+- Player position injected into IDE generate calls
+- Currently opened file included in context
+- Execution output from previous runs included in context
 
-The IDE will provide additional contextual information to the LLM.
+Additional context features beyond original scope:
 
-Planned context elements include:
-
-- active mods list
-- player position
-- currently opened file
-- execution output from previous runs
-
-This will allow the LLM to generate more accurate and relevant code.
-
----
-
-## Planned Improvements
-
-### Execution Feedback Loop
-
-Improve the interaction between generated code and the execution system.
-
-Possible features:
-
-- automatic error detection
-- AI-assisted debugging
-- improved output visualization
+- **IDE Asset Picker** (`ide_asset_picker.lua`) – three-tab browser for Nodes,
+  Items/Tools, and Sounds with search, pagination, and selection highlighting.
+  Selected assets are serialised into the LLM context as structured metadata
+  (tiles, groups, sound presets, tool capabilities).
+- **API Reference Injection** (`ide_api_stubs.lua`) – optional slim (~400 tokens)
+  or full (~2000 tokens) Luanti API reference injected per session via toggle
+  buttons in the IDE toolbar.
 
 ---
 
-### WorldEdit Integration
+## Execution Feedback Loop ✓
 
-Further improvements to AI-assisted building tools:
+All planned features are implemented:
 
-- context-aware structure generation
-- material-aware building suggestions
-- improved prompt templates
+- **Automatic error detection** – pre-executor runs before every real execution,
+  catching syntax errors, naming-convention violations (`llm_connect:` prefix
+  enforcement), and missing required fields (`tiles`, `inventory_image`, etc.)
+  without triggering actual game registrations. The sandbox falls back to `_G`
+  for all loaded mod globals (default, stairs, vector, etc.) so real API calls
+  like `default.node_sound_ice_defaults()` work correctly during pre-check.
+- **AI-assisted debugging** – Auto-Fix loop (`M.execute_with_retry`) retries
+  failed executions automatically: on error the LLM receives the current code
+  plus the full error output and returns a corrected version, which is written
+  back into the editor and re-executed. The loop aborts on success, on repeated
+  identical errors (LLM stuck), or after reaching the configurable iteration
+  limit (`llm_ide_auto_fix_iterations`, default 3).
+- **Improved output visualisation** – status bar shows last-run result (✓/✗),
+  pre-check warnings are surfaced inline in the output panel, and the Auto-Fix
+  button becomes active (highlighted amber) only after a failed run.
+
+Security note: broken code is never written to `llm_startup.lua`. Persistence
+only happens when execution succeeds.
 
 ---
 
-### Prompt System Refinements
+## WorldEdit Integration ✓
 
-Improve system prompts used for:
+- Context-aware structure generation with player position, selection, and
+  nearby node sample
+- Material-aware building suggestions via the material picker
+- Improved prompt templates for single-shot and iterative loop modes
+- WorldEditAdditions (WEA) integration: torus, ellipsoid, erode, convolve,
+  overlay, layers, replacemix
 
-- Lua code generation
-- WorldEdit assistance
-- general chat interactions
+---
 
-The goal is more consistent and reliable responses.
+## Prompt System Refinements ✓
+
+- Lua code generation prompt updated with security rules, context awareness,
+  and naming convention guidance
+- WorldEdit system prompts refined for single-shot and loop modes
+- Naming convention guide optionally injected into generate calls
+- Language instruction system (29 languages, configurable repeat count)
 
 ---
 
 ## Future Ideas
 
-Ideas being explored for future versions:
+Items still being explored for future versions or a 0.9.x release:
 
-- agent-style AI workflows
-- multi-step code generation and correction
-- automatic debugging loops
-- extended IDE tooling
-- improved building automation tools
+- Automatic debugging loops triggered without user interaction (currently
+  requires the Auto-Fix button; fully autonomous mode not yet implemented)
+- Extended IDE tooling (diff view, multi-file context, snippet library UI)
+- Improved building automation (smarter iteration planning in WE loop)
+- Agent-style workflows spanning chat and IDE in a single session
 
 ---
 

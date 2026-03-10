@@ -1,5 +1,5 @@
 -- ===========================================================================
---  LLM Connect Init v0.9.0-dev
+--  LLM Connect Init v0.9.0
 --  author: H5N3RG
 --  license: LGPL-3.0-or-later
 -- ===========================================================================
@@ -57,25 +57,6 @@ if not executor_ok or not executor then
     return
 end
 
--- === Load GUI modules ===
-local chat_gui_ok, chat_gui = pcall(dofile, mod_dir .. "/chat_gui.lua")
-if not chat_gui_ok then
-    core.log("error", "[llm_connect] Failed to load chat_gui.lua: " .. tostring(chat_gui))
-    return
-end
-
-local ide_gui_ok, ide_gui = pcall(dofile, mod_dir .. "/ide_gui.lua")
-if not ide_gui_ok then
-    core.log("error", "[llm_connect] Failed to load ide_gui.lua: " .. tostring(ide_gui))
-    return
-end
-
-local config_gui_ok, config_gui = pcall(dofile, mod_dir .. "/config_gui.lua")
-if not config_gui_ok then
-    core.log("error", "[llm_connect] Failed to load config_gui.lua: " .. tostring(config_gui))
-    return
-end
-
 -- === Load helpers ===
 local chat_context_ok, chat_context = pcall(dofile, mod_dir .. "/chat_context.lua")
 if not chat_context_ok then
@@ -95,27 +76,47 @@ elseif not we_agency.is_available() then
     -- so WE buttons may still appear if worldedit loads later (should not happen with optional_depends)
 end
 
--- === Load material picker (WorldEdit context) ===
+-- === Load pickers (must be before GUI modules that reference them) ===
 local picker_ok, material_picker = pcall(dofile, mod_dir .. "/material_picker.lua")
 if not picker_ok then
     core.log("warning", "[llm_connect] material_picker.lua not loaded: " .. tostring(material_picker))
     material_picker = nil
 end
 
--- === Load IDE asset picker ===
 local ide_ap_ok, ide_asset_picker = pcall(dofile, mod_dir .. "/ide_asset_picker.lua")
 if not ide_ap_ok then
     core.log("warning", "[llm_connect] ide_asset_picker.lua not loaded: " .. tostring(ide_asset_picker))
     ide_asset_picker = nil
 end
 
--- === Make modules globally available ===
+-- === Make pickers globally available before GUI modules load ===
+_G.material_picker  = material_picker
+_G.ide_asset_picker = ide_asset_picker
+
+-- === Load GUI modules ===
+local chat_gui_ok, chat_gui = pcall(dofile, mod_dir .. "/chat_gui.lua")
+if not chat_gui_ok then
+    core.log("error", "[llm_connect] Failed to load chat_gui.lua: " .. tostring(chat_gui))
+    return
+end
+
+local ide_gui_ok, ide_gui = pcall(dofile, mod_dir .. "/ide_gui.lua")
+if not ide_gui_ok then
+    core.log("error", "[llm_connect] Failed to load ide_gui.lua: " .. tostring(ide_gui))
+    return
+end
+
+local config_gui_ok, config_gui = pcall(dofile, mod_dir .. "/config_gui.lua")
+if not config_gui_ok then
+    core.log("error", "[llm_connect] Failed to load config_gui.lua: " .. tostring(config_gui))
+    return
+end
+
+-- === Make remaining modules globally available ===
 _G.chat_gui         = chat_gui
 _G.llm_api          = llm_api
 _G.executor         = executor
 _G.we_agency        = we_agency
-_G.material_picker  = material_picker
-_G.ide_asset_picker = ide_asset_picker
 _G.ide_gui          = ide_gui
 _G.config_gui       = config_gui
 
@@ -227,7 +228,7 @@ core.register_on_player_receive_fields(function(player, formname, fields)
 end)
 
 -- === Logging ===
-core.log("action", "[llm_connect] LLM Connect v0.9.0-dev loaded")
+core.log("action", "[llm_connect] LLM Connect v0.9.0 loaded")
 if llm_api.is_configured() then
     core.log("action", "[llm_connect] LLM API ready - model: " .. tostring(llm_api.config.model))
 else
