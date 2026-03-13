@@ -28,7 +28,7 @@
 
 local mod_name = core.get_current_modname()
 local mod_dir  = core.get_modpath(mod_name)
-local IDE_DIR  = mod_dir .. "/addons/smart_lua_ide"
+local IDE_DIR  = mod_dir .. "/smart_lua_ide"
 
 -- Hilfsfunktion: Datei laden mit Fehlerbehandlung
 -- fatal=true → bricht init ab bei Fehler (harter Fehler)

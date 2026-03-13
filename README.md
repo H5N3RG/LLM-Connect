@@ -133,22 +133,22 @@ llm_connect/
 ├── registry.lua                    Inter-mod addon gateway
 ├── agent.lua                       Agent orchestrator (loop, dispatch, undo)
 ├── agent_system_prompts.lua        Agent LLM prompt builder         [TODO D]
-├── main_gui.lua                    Main UI: Chat + Agent panel       [TODO E]
-├── config_gui.lua                  In-game settings GUI              [TODO E]
-└── addons/
-    ├── smart_lua_ide/              First-class sub-system (not a registry addon)
-    │   ├── ide_gui.lua
-    │   ├── code_executor.lua
-    │   ├── ide_system_prompts.lua
-    │   ├── ide_api_stubs.lua
-    │   ├── ide_asset_picker.lua
-    │   └── ide_languages.lua
-    ├── worldedit_agent/            WorldEdit addon (port from llm_worldedit.lua)
-    │   ├── worldedit_agent.lua                                       [TODO B]
-    │   ├── worldedit_system_prompts.lua                              [TODO B]
-    │   └── material_picker.lua                                       [TODO B]
-    └── mobs_redo/                  Mobs Redo addon (new)
-        └── mobs_redo.lua                                             [TODO C]
+├── main_gui.lua                    Main UI: Chat + Agent panel       [TODO F]
+├── config_gui.lua                  In-game settings GUI              [TODO F]
+├── smart_lua_ide/                  First-class sub-system (outside addons/, not registry-bound)
+│   ├── ide_gui.lua
+│   ├── code_executor.lua
+│   ├── ide_system_prompts.lua
+│   ├── ide_api_stubs.lua
+│   ├── ide_asset_picker.lua
+│   └── ide_languages.lua
+└── addons/                         All registry/agent-bound addons live here
+    ├── worldedit_agent/
+    │   ├── worldedit_agent.lua                                       [TODO C]
+    │   ├── worldedit_system_prompts.lua                              [TODO C]
+    │   └── material_picker.lua                                       [TODO C]
+    └── mobs_redo/
+        └── mobs_redo.lua                                             [TODO E]
 ```
 
 ---
@@ -279,11 +279,11 @@ Erste neue Community-Addon als Referenz-Implementierung.
 
 Reine Strukturänderung — keine funktionalen Änderungen.
 
-- [ ] Dateien von Root nach `addons/smart_lua_ide/` verschieben:
+- [ ] Dateien von Root nach `smart_lua_ide/` verschieben:
   `ide_gui.lua`, `code_executor.lua`, `ide_system_prompts.lua`,
   `ide_api_stubs.lua`, `ide_asset_picker.lua`, `ide_languages.lua`
 - [ ] Interne `dofile`-Pfade in allen IDE-Dateien auf neue Lage anpassen
-- [ ] `init.lua` lädt bereits aus `addons/smart_lua_ide/` — keine Änderung nötig
+- [ ] `init.lua` lädt bereits aus `smart_lua_ide/` — keine Änderung nötig
 - [ ] Root-Dateien löschen (nach DEPRECATION_MAP)
 
 ---
