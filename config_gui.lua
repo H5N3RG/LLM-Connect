@@ -179,6 +179,20 @@ local function build_tab_api(fs, cfg)
     table.insert(fs, "tooltip[temperature;0 = deterministic, 1 = balanced, 2 = creative]")
     y = y + FIELD_H + PAD
 
+    y = sep(fs, y, "Chat behaviour")
+    y = y + 0.2
+
+    table.insert(fs, string.format("label[%.2f,%.2f;Chat system prompt (optional, empty = none):]", PAD, y))
+    y = y + 0.45
+    local chat_sys = core.settings:get("llm_chat_system_prompt") or ""
+    table.insert(fs, string.format(
+        "field[%.2f,%.2f;%.2f,%.2f;chat_system_prompt;;%s]",
+        PAD, y, W - PAD*2, FIELD_H,
+        core.formspec_escape(chat_sys)))
+    table.insert(fs, "style[chat_system_prompt;bgcolor=#1e1e1e]")
+    table.insert(fs, "tooltip[chat_system_prompt;Prepended as system message in plain chat (not agent mode). Basic context is always added separately. Example: You are a friendly Luanti helper. Be concise.]")
+    y = y + FIELD_H + PAD
+
     y = sep(fs, y, "Timeouts")
     y = y + 0.2
 
@@ -279,7 +293,12 @@ local function build_tab_agent(fs)
     y = sep(fs, y, "Addon defaults")
     y = y + 0.2
 
-    -- Addons enabled by default
+    local addons_default_on = core.settings:get_bool("llm_agent_addons_default_on", false)
+    table.insert(fs, string.format(
+        "checkbox[%.2f,%.2f;agent_addons_default_on;Addons active by default (players can still override per-session);%s]",
+        PAD, y, addons_default_on and "true" or "false"))
+    table.insert(fs, "tooltip[agent_addons_default_on;When off (default), players must explicitly enable addons in the Addons panel. When on, all addons are active unless the player disables them.]")
+    y = y + CB_H + PAD * 0.5
     table.insert(fs, string.format("label[%.2f,%.2f;Addon IDs enabled by default (empty = all):]", PAD, y))
     y = y + 0.45
     local addons_enabled = core.settings:get("llm_agent_addons_enabled") or ""
@@ -393,6 +412,14 @@ function M.handle_fields(name, formname, fields)
         return true
     end
 
+    -- ── Agent addons default toggle (instant) ────────────────
+    if fields.agent_addons_default_on ~= nil then
+        local val = fields.agent_addons_default_on == "true"
+        core.settings:set_bool("llm_agent_addons_default_on", val)
+        M.show(name, "agent")
+        return true
+    end
+
     -- ── Agent snapshot toggle (instant) ──────────────────────
     if fields.agent_snapshot ~= nil then
         local val = fields.agent_snapshot == "true"
@@ -444,6 +471,10 @@ function M.handle_fields(name, formname, fields)
                 timeout_ide   = timeout_ide,
                 timeout_agent = timeout_agent,
             })
+
+            -- Chat system prompt saved directly to settings (not in llm_api.config)
+            local csp = (fields.chat_system_prompt or ""):match("^%s*(.-)%s*$")
+            core.settings:set("llm_chat_system_prompt", csp)
 
             core.chat_send_player(name, "[LLM] ✓ API configuration saved (runtime only)")
             core.log("action", "[llm_connect] API config updated by " .. name)

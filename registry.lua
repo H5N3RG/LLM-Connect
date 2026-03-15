@@ -445,7 +445,8 @@ function M.is_addon_enabled(player_name, addon_id)
     end
     local global = global_enabled_set()
     if global ~= nil then return global[addon_id] == true end
-    return true  -- Default: alle aktiv
+    -- Default: controlled by llm_agent_addons_default_on (default false)
+    return core.settings:get_bool("llm_agent_addons_default_on", false)
 end
 
 -- Setzt Aktivierungsstatus für einen Spieler — aufgerufen von main_gui.

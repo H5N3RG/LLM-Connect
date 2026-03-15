@@ -75,8 +75,9 @@ local function get_session(name)
     if not sessions[name] then
         sessions[name] = {
             history        = {},  -- chat message history [{role, content}]
-            last_input     = "",  -- preserved across show() calls
-            iter_preference = nil, -- nil = use server default
+            last_input      = "",   -- preserved across show() calls
+            iter_preference = nil,  -- nil = use server default
+            agent_active    = false, -- explicit opt-in toggle, default off
         }
     end
     return sessions[name]
@@ -143,8 +144,30 @@ function M.show(name)
         table.insert(fs, "tooltip[open_config;Open LLM configuration (llm_root only)]")
     end
 
-    -- ── Header row 2: IDE | Addons | [iter stepper] ────────
+    -- ── Header row 2: Mode toggle | IDE | Addons | [iter stepper] ──
     local bx = PAD
+
+    -- Agent mode toggle (visible to anyone with llm_agent priv)
+    if can_agent(name) then
+        local active  = session.agent_active
+        local running = agent and agent.is_running(name)
+        if running then
+            -- locked while agent is executing
+            table.insert(fs, "style[toggle_agent;bgcolor=#2a1a00;textcolor=#ffaa44]")
+            table.insert(fs, "button[" .. bx .. ",0.95;3.2,0.65;toggle_agent;⚙ Agent: RUN…]")
+            table.insert(fs, "tooltip[toggle_agent;Agent is currently running — stop it first to switch modes]")
+        elseif active then
+            table.insert(fs, "style[toggle_agent;bgcolor=#1a3a1a;textcolor=#aaffaa]")
+            table.insert(fs, "button[" .. bx .. ",0.95;3.2,0.65;toggle_agent;⚙ Agent: ON]")
+            table.insert(fs, "tooltip[toggle_agent;Agent ON — LLM executes tools. Click to switch to plain chat.]")
+        else
+            table.insert(fs, "style[toggle_agent;bgcolor=#1a1a1a;textcolor=#666666]")
+            table.insert(fs, "button[" .. bx .. ",0.95;3.2,0.65;toggle_agent;⚙ Agent: OFF]")
+            table.insert(fs, "tooltip[toggle_agent;Agent OFF — plain chat mode. Click to enable tool execution.]")
+        end
+        bx = bx + 3.2 + 0.15
+    end
+
     if can_ide(name) then
         table.insert(fs, "style[open_ide;bgcolor=#1a1a2a;textcolor=#aaaaff]")
         table.insert(fs, "button[" .. bx .. ",0.95;2.5,0.65;open_ide;◈ IDE]")
@@ -429,11 +452,9 @@ local function do_send(name, input, session)
     local agent    = get_agent()
     local registry = get_registry()
 
-    -- Decide: use agent if the player has llm_agent privilege.
-    -- run_chat_command is always available as a built-in tool, so the agent
-    -- loop is useful even with zero registered addons — the LLM can still
-    -- dispatch any chat command the player is privileged to run.
-    local use_agent = can_agent(name) and agent ~= nil
+    -- Agent mode is opt-in: player must have llm_agent priv AND have
+    -- explicitly toggled the agent on in the GUI (session.agent_active).
+    local use_agent = can_agent(name) and agent ~= nil and session.agent_active
 
     if use_agent then
         -- Agent mode: stream step feedback into history
@@ -513,12 +534,21 @@ local function do_send(name, input, session)
         table.insert(session.history, { role = "user", content = input })
         table.insert(messages,        { role = "user", content = input })
 
+        -- Inject system messages: custom prompt first, then basic_context
+        local sys_prompt = core.settings:get("llm_chat_system_prompt") or ""
+        sys_prompt = sys_prompt:match("^%s*(.-)%s*$")
+        if sys_prompt ~= "" then
+            table.insert(messages, 1, { role = "system", content = sys_prompt })
+        end
+
         -- Inject basic_context as system message if available
         local basic_ctx = _G.basic_context
         if basic_ctx and basic_ctx.get then
             local ctx = basic_ctx.get(name)
             if ctx and ctx ~= "" then
-                table.insert(messages, 1, { role = "system", content = ctx })
+                -- Insert after custom prompt (or at position 1 if no custom prompt)
+                local pos = (sys_prompt ~= "") and 2 or 1
+                table.insert(messages, pos, { role = "system", content = ctx })
             end
         end
 
@@ -583,8 +613,16 @@ function M.handle_fields(name, formname, fields)
 
     local session = get_session(name)
 
+    -- ── Agent mode toggle ───────────────────────────────────
+    if fields.toggle_agent then
+        local running = agent and agent.is_running(name)
+        if not running then
+            session.agent_active = not session.agent_active
+        end
+        M.show(name); return true
+
     -- ── Iteration stepper buttons ────────────────────────────
-    if fields.iter_dec then
+    elseif fields.iter_dec then
         local srv_max = tonumber(core.settings:get("llm_agent_max_iterations")) or 8
         local cur = session.iter_preference or srv_max
         session.iter_preference = math.max(1, cur - 1)

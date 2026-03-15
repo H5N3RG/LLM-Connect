@@ -37,6 +37,12 @@ llm_timeout_agent        (Agent loop timeout override, 0=global)      int    0  
 
 # === Chat ===
 
+# Optional system prompt injected into every plain chat request (non-agent mode).
+# Leave empty for no system prompt — basic_context (player pos, commands etc.)
+# is always included separately regardless of this setting.
+# Example: "You are a helpful Luanti server assistant. Answer briefly."
+llm_chat_system_prompt (Chat mode system prompt, empty=none)         string
+
 # Max number of messages from chat history sent per LLM request.
 # Oldest messages are dropped first when the limit is exceeded.
 llm_context_max_history  (Max chat history messages sent per request) int    20     2     100
@@ -78,6 +84,12 @@ llm_agent_command_whitelist (Agent command whitelist, empty=all)      string
 # Empty = all registered addons are active by default.
 # Per-player overrides set in-game via the Addons panel always take precedence.
 llm_agent_addons_enabled (Addon IDs enabled by default, empty=all)   string
+
+# Whether addons are active by default when no explicit list is set above
+# and no per-player override exists.
+# false (default) = player must explicitly enable addons in the Addons panel.
+# true = all registered addons are active unless explicitly disabled.
+llm_agent_addons_default_on (Addons active by default)               bool   false
 
 
 # === Smart Lua IDE ===
