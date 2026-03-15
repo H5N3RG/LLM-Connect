@@ -30,45 +30,45 @@ local mod_name = core.get_current_modname()
 local mod_dir  = core.get_modpath(mod_name)
 local IDE_DIR  = mod_dir .. "/smart_lua_ide"
 
--- Hilfsfunktion: Datei laden mit Fehlerbehandlung
--- fatal=true → bricht init ab bei Fehler (harter Fehler)
--- fatal=false → loggt Warnung, gibt nil zurück (optionales Modul)
+-- Helper: load a file with error handling
+-- fatal=true  → aborts init on error (hard failure)
+-- fatal=false → logs a warning, returns nil (optional module)
 local function load_module(path, label, fatal)
     local ok, result = pcall(dofile, path)
     if not ok then
         if fatal then
             core.log("error", string.format(
-                "[llm_connect] FATAL: %s konnte nicht geladen werden: %s",
+                "[llm_connect] FATAL: %s could not be loaded: %s",
                 label, tostring(result)))
-            error("[llm_connect] Init abgebrochen — " .. label .. " fehlgeschlagen")
+            error("[llm_connect] init aborted — " .. label .. " failed")
         else
             core.log("warning", string.format(
-                "[llm_connect] %s nicht geladen: %s", label, tostring(result)))
+                "[llm_connect] %s not loaded: %s", label, tostring(result)))
             return nil
         end
     end
     if result == nil and fatal then
-        core.log("error", "[llm_connect] FATAL: " .. label .. " gab nil zurück")
-        error("[llm_connect] Init abgebrochen — " .. label .. " gab nil zurück")
+        core.log("error", "[llm_connect] FATAL: " .. label .. " returned nil")
+        error("[llm_connect] init aborted — " .. label .. " returned nil")
     end
-    core.log("action", "[llm_connect] ✓ " .. label .. " geladen")
+    core.log("action", "[llm_connect] ✓ " .. label .. " loaded")
     return result
 end
 
 -- ===========================================================================
--- 1. HTTP-API sichern
+-- 1. Acquire HTTP API
 -- ===========================================================================
 
 local http = core.request_http_api()
 if not http then
     core.log("error",
-        "[llm_connect] HTTP-API nicht verfügbar — 'llm_connect' muss in" ..
-        " secure.http_mods in der minetest.conf eingetragen sein")
+        "[llm_connect] HTTP API not available — 'llm_connect' must be listed in" ..
+        " secure.http_mods in minetest.conf")
     return
 end
 
 -- ===========================================================================
--- 2. Privileges registrieren
+-- 2. Register privileges
 -- ===========================================================================
 
 core.register_privilege("llm", {
@@ -102,80 +102,106 @@ core.register_privilege("llm_root", {
 local llm_api = load_module(mod_dir .. "/llm_api.lua", "llm_api", true)
 
 if not llm_api.init(http) then
-    core.log("error", "[llm_connect] LLM API init fehlgeschlagen")
+    core.log("error", "[llm_connect] LLM API init failed")
     return
 end
 
 -- ===========================================================================
--- 4. Basic Context
+-- 4. Basic context
 -- ===========================================================================
 
 local basic_context = load_module(mod_dir .. "/basic_context.lua", "basic_context", true)
 
 -- ===========================================================================
--- 5. Registry — Addon-Gateway
+-- 5. Registry — addon gateway
 -- ===========================================================================
 
 local registry = load_module(mod_dir .. "/registry.lua", "registry", true)
 
--- Globalen Namespace setzen: _G.llm_connect.registry bereit für externe Mods
+-- Set global namespace: _G.llm_connect.registry ready for external mods
 registry.expose_global()
 
--- Interne Addons sofort laden (addons/ außer smart_lua_ide)
+-- Load internal addons immediately (addons/ except smart_lua_ide)
 registry.load_internal()
 
 -- ===========================================================================
--- 6. Agent Orchestrator
+-- 6. Agent orchestrator
 -- ===========================================================================
 
 local agent = load_module(mod_dir .. "/agent.lua", "agent", true)
 
--- Agent in globalem Namespace verfügbar machen
+-- Expose agent in global namespace
 _G.llm_connect.agent = agent
 
 -- ===========================================================================
--- 7. Smart Lua IDE — First-Class Sub-System
---    Direkt von init.lua geladen, NICHT über registry.
---    Reihenfolge innerhalb der IDE ist wichtig:
---      code_executor → ide_asset_picker → ide_gui (hängt von beiden ab)
+-- 7. Smart Lua IDE — first-class sub-system
+--    Loaded directly by init.lua, NOT through the registry.
+--    Load order within the IDE matters:
+--      code_executor → ide_asset_picker → ide_gui (ide_gui depends on both)
 -- ===========================================================================
 
-local code_executor  = load_module(IDE_DIR .. "/code_executor.lua",  "code_executor",  false)
+local code_executor    = load_module(IDE_DIR .. "/code_executor.lua",    "code_executor",    false)
 local ide_asset_picker = load_module(IDE_DIR .. "/ide_asset_picker.lua", "ide_asset_picker", false)
-local ide_gui        = load_module(IDE_DIR .. "/ide_gui.lua",         "ide_gui",         false)
+local ide_gui          = load_module(IDE_DIR .. "/ide_gui.lua",          "ide_gui",          false)
+
+-- Expose IDE modules as globals so ide_gui.lua can resolve them at call time
+_G.code_executor    = code_executor
+_G.ide_asset_picker = ide_asset_picker
+_G.ide_gui          = ide_gui
 
 -- ===========================================================================
--- 8. Haupt-GUI (Chat + Agent-Panel)
+-- 8. Main GUI (Chat + Agent panel)
 -- ===========================================================================
 
 local main_gui = load_module(mod_dir .. "/main_gui.lua", "main_gui", true)
 
 -- ===========================================================================
--- 9. Config-GUI
+-- 9. Config GUI
 -- ===========================================================================
 
 local config_gui = load_module(mod_dir .. "/config_gui.lua", "config_gui", true)
 
 -- ===========================================================================
--- 10. Externe Addon-Mods einbinden (nach mods_loaded)
---     Zu diesem Zeitpunkt haben externe Mods bereits explizit register()
---     aufgerufen (wenn sie optional_depends = llm_connect haben).
---     discover_external() findet zusätzlich llm_connect_addon.lua Dateien.
+-- Expose remaining modules as globals
+-- Required by config_gui, main_gui, agent, and addon code that resolves
+-- dependencies at call time via _G rather than at load time.
+-- ===========================================================================
+
+_G.llm_api       = llm_api        -- used by config_gui, main_gui, agent, IDE
+_G.basic_context = basic_context  -- used by agent (do_iteration)
+_G.registry      = registry       -- used by agent (get_registry fallback)
+_G.main_gui      = main_gui       -- used by config_gui close, ide_gui close
+_G.config_gui    = config_gui     -- used by main_gui open_config button
+
+-- ===========================================================================
+-- 10. Load external addon mods (after mods_loaded)
+--     At this point external mods have already called register() explicitly
+--     (if they declared optional_depends = llm_connect).
+--     discover_external() additionally scans for llm_connect_addon.lua files.
 -- ===========================================================================
 
 core.register_on_mods_loaded(function()
     registry.discover_external()
     core.log("action", string.format(
-        "[llm_connect] Bereit — %d Addon(s) registriert",
+        "[llm_connect] ready — %d addon(s) registered",
         (function() local n=0; for _ in pairs(registry.addons) do n=n+1 end; return n end)()))
 end)
 
 -- ===========================================================================
--- 11. Chat-Commands
+-- 11. Chat commands
 -- ===========================================================================
 
+core.register_chatcommand("llm", {
+    description = "Open the LLM Connect chat interface",
+    privs       = { llm = true },
+    func = function(name, _)
+        main_gui.show(name)
+        return true
+    end,
+})
+
 core.register_chatcommand("llm_config", {
-    description = "LLM Connect Konfiguration öffnen",
+    description = "Open LLM Connect configuration",
     privs       = { llm = true },
     func = function(name, _)
         config_gui.show(name)
@@ -184,15 +210,15 @@ core.register_chatcommand("llm_config", {
 })
 
 core.register_chatcommand("llm_config_reload", {
-    description = "LLM Connect Einstellungen neu laden (ohne Serverneustart)",
+    description = "Reload LLM Connect settings without server restart",
     privs       = { llm_root = true },
     func = function(name, _)
         local ok, err = pcall(llm_api.reload_config)
         if ok then
-            core.chat_send_player(name, "[LLM] ✓ Konfiguration neu geladen")
+            core.chat_send_player(name, "[LLM] ✓ Configuration reloaded")
             return true
         else
-            core.chat_send_player(name, "[LLM] ✗ Fehler: " .. tostring(err))
+            core.chat_send_player(name, "[LLM] ✗ Error: " .. tostring(err))
             return false, tostring(err)
         end
     end,
@@ -202,38 +228,38 @@ core.register_chatcommand("llm_config_reload", {
 local startup_file = core.get_worldpath() .. "/llm_startup.lua"
 
 core.register_chatcommand("llm_startup_reload", {
-    description = "llm_startup.lua manuell neu ausführen (Neuregistrierungen schlagen fehl — Neustart nötig)",
+    description = "Re-execute llm_startup.lua at runtime (new registrations will fail — restart required)",
     privs       = { llm_root = true },
     func = function(name, _)
         local f = io.open(startup_file, "r")
         if not f then
-            core.chat_send_player(name, "[LLM] ✗ Keine llm_startup.lua gefunden")
-            return false, "Datei nicht gefunden"
+            core.chat_send_player(name, "[LLM] ✗ No llm_startup.lua found")
+            return false, "file not found"
         end
         f:close()
-        core.log("action", "[llm_connect] Startup-Code manuell neu geladen von " .. name)
+        core.log("action", "[llm_connect] startup code manually reloaded by " .. name)
         core.chat_send_player(name,
-            "[LLM] ⚠ Startup-Code wird ausgeführt — Neuregistrierungen schlagen fehl!")
+            "[LLM] ⚠ Running startup code — new registrations will fail!")
         local ok, err = pcall(dofile, startup_file)
         if ok then
-            core.chat_send_player(name, "[LLM] ✓ Ausgeführt (Neustart für Registrierungen)")
+            core.chat_send_player(name, "[LLM] ✓ Executed (restart for registrations to take effect)")
             return true
         else
-            core.chat_send_player(name, "[LLM] ✗ Fehler: " .. tostring(err))
+            core.chat_send_player(name, "[LLM] ✗ Error: " .. tostring(err))
             return false, tostring(err)
         end
     end,
 })
 
 -- ===========================================================================
--- 12. Zentraler Formspec-Handler
+-- 12. Central formspec handler
 -- ===========================================================================
 
 core.register_on_player_receive_fields(function(player, formname, fields)
     if not player then return false end
     local name = player:get_player_name()
 
-    -- Haupt-GUI: Chat + Agent-Panel
+    -- Main GUI: chat + agent panel
     if formname:match("^llm_connect:main") or
        formname:match("^llm_connect:chat") or
        formname:match("^llm_connect:agent") then
@@ -241,11 +267,11 @@ core.register_on_player_receive_fields(function(player, formname, fields)
 
     -- Smart Lua IDE
     elseif formname:match("^llm_connect:ide") then
-        if ide_gui then
-            return ide_gui.handle_fields(name, formname, fields)
+        if _G.ide_gui then
+            return _G.ide_gui.handle_fields(name, formname, fields)
         end
 
-    -- Config-GUI (inkl. Kontext-Layer-Picker)
+    -- Config GUI
     elseif formname:match("^llm_connect:config") then
         return config_gui.handle_fields(name, formname, fields)
     end
@@ -254,17 +280,17 @@ core.register_on_player_receive_fields(function(player, formname, fields)
 end)
 
 -- ===========================================================================
--- 13. Startup-Code laden (llm_startup.lua im World-Verzeichnis)
+-- 13. Load startup code (llm_startup.lua in world directory)
 -- ===========================================================================
 
 local function load_startup_code()
     local f = io.open(startup_file, "r")
     if not f then return end
     f:close()
-    core.log("action", "[llm_connect] Startup-Code laden: " .. startup_file)
+    core.log("action", "[llm_connect] loading startup code: " .. startup_file)
     local ok, err = pcall(dofile, startup_file)
     if not ok then
-        core.log("error", "[llm_connect] Startup-Code Fehler: " .. tostring(err))
+        core.log("error", "[llm_connect] startup code error: " .. tostring(err))
     end
 end
 
@@ -272,4 +298,4 @@ load_startup_code()
 
 -- ===========================================================================
 
-core.log("action", "[llm_connect] LLM Connect 1.0.0-dev init abgeschlossen")
+core.log("action", "[llm_connect] LLM Connect 1.0.0-dev init complete")

@@ -3,30 +3,30 @@
 --  author: H5N3RG
 --  license: LGPL-3.0-or-later
 --
---  ROLE: Basiskontext-Lieferant für alle Agenten.
+--  ROLE: Basic context provider for all agents.
 --
---  ZWEI LAYER (pro Spieler konfigurierbar, in config_gui wählbar):
+--  TWO LAYERS (per-player configurable, selectable in config_gui):
 --
---  BASIS (immer aktiv, nicht abschaltbar):
---    - Spielername, Position, HP, Breath, gehaltenes Item
---    - Servername, Game, Engine-Version, Spielzeit, aktive Spieleranzahl
---    - Alle anderen Spieler: Name + Position
---    - ALLE registrierten Chat-Commands: Name + Beschreibung + Params-Syntax
+--  BASIS (always active, cannot be disabled):
+--    - Player name, position, HP, breath, held item
+--    - Server name, game, engine version, in-game time, online player count
+--    - All other players: name + position
+--    - ALL registered chat commands: name + description + params syntax
 --
---  ERWEITERT (opt-in pro Spieler):
---    - Alles aus BASIS
---    - Nodes / Items / Entities aus Luanti-Registry
---    - Gefiltert per Typ-Toggle (Nodes ✓/✗, Items ✓/✗, Entities ✓/✗)
---    - Gefiltert per Mod-Picker: Spieler wählt welche Mods einbezogen werden
---    - Picker-State wird persistent gespeichert (mod-gefilterte Auswahl)
+--  ERWEITERT (opt-in per player):
+--    - Everything from BASIS
+--    - Nodes / Items / Entities from Luanti registry
+--    - Filtered by type toggle (Nodes ✓/✗, Items ✓/✗, Entities ✓/✗)
+--    - Filtered by mod picker: player selects which mods to include
+--    - Picker state is persisted per world (mod-filtered selection)
 --
---  PICKER-STATE PERSISTENZ:
---    Gespeichert in <world_path>/llm_basic_context_state.json
+--  PICKER STATE PERSISTENCE:
+--    Stored in <world_path>/llm_basic_context_state.json
 --    Format: { [player_name] = { layer, types, mods } }
---    Geladen beim ersten get() eines Spielers, gespeichert bei jeder Änderung.
+--    Loaded on first get() call per player, saved on every change.
 --
 --  PUBLIC API:
---    M.get(player_name)                        → string  (Kontext für LLM)
+--    M.get(player_name)                        → string  (context string for LLM)
 --    M.get_layer(player_name)                  → "basis" | "erweitert"
 --    M.set_layer(player_name, layer)           → void
 --    M.get_types(player_name)                  → { nodes=bool, items=bool, entities=bool }
@@ -35,9 +35,9 @@
 --    M.set_mod_selected(player_name, mod, bool)→ void
 --    M.select_all_mods(player_name)            → void
 --    M.select_no_mods(player_name)             → void
---    M.save_state()                            → void  (von außen aufrufbar)
+--    M.save_state()                            → void  (callable externally)
 --
---  VERWENDUNG in agent.lua / do_iteration():
+--  USAGE in agent.lua / do_iteration():
 --    local basic_ctx = get_basic_context()
 --    local ctx_str   = basic_ctx.get(player_name)
 --
@@ -50,16 +50,16 @@ local M    = {}
 -- Persistenter State
 -- ===========================================================================
 
--- Datei in der alle Spieler-Zustände gespeichert werden
+-- File storing all player states
 local STATE_FILE = core.get_worldpath() .. "/llm_basic_context_state.json"
 
--- In-Memory State: { [player_name] = { layer, types, mods } }
+-- In-memory state: { [player_name] = { layer, types, mods } }
 -- layer: "basis" | "erweitert"
 -- types: { nodes=bool, items=bool, entities=bool }
--- mods:  { [mod_name] = bool }   — nil = noch nicht initialisiert (alle an)
+-- mods:  { [mod_name] = bool }   — nil = not yet initialised (all mods on)
 local player_states = {}
 
--- Lädt den persistierten State aus der JSON-Datei
+-- Loads persisted state from the JSON file
 local function load_state()
     local f = io.open(STATE_FILE, "r")
     if not f then return end
@@ -68,7 +68,7 @@ local function load_state()
     if not raw or raw == "" then return end
     local ok, data = pcall(core.parse_json, raw)
     if ok and type(data) == "table" then
-        -- Migriere geladene Daten in player_states
+        -- Migrate loaded data into player_states
         for pname, ps in pairs(data) do
             player_states[pname] = {
                 layer = ps.layer or "basis",
@@ -80,11 +80,11 @@ local function load_state()
                 mods = ps.mods or nil,
             }
         end
-        core.log("action", "[basic_context] State geladen: "
-            .. tostring(#(function() local n=0; for _ in pairs(data) do n=n+1 end; return n end)())
-            .. " Spieler")
+        core.log("action", "[basic_context] state loaded: "
+            .. tostring((function() local n=0; for _ in pairs(data) do n=n+1 end; return n end)())
+            .. " player(s)")
     else
-        core.log("warning", "[basic_context] State-Datei konnte nicht geparst werden")
+        core.log("warning", "[basic_context] state file could not be parsed")
     end
 end
 
@@ -92,13 +92,13 @@ end
 function M.save_state()
     local ok, encoded = pcall(core.write_json, player_states)
     if not ok then
-        core.log("error", "[basic_context] save_state: JSON-Encoding fehlgeschlagen: "
+        core.log("error", "[basic_context] save_state: JSON encoding failed: "
             .. tostring(encoded))
         return
     end
     local f = io.open(STATE_FILE, "w")
     if not f then
-        core.log("error", "[basic_context] save_state: Datei konnte nicht geöffnet werden: "
+        core.log("error", "[basic_context] save_state: could not open file: "
             .. STATE_FILE)
         return
     end
@@ -106,26 +106,26 @@ function M.save_state()
     f:close()
 end
 
--- State für einen Spieler holen (lazy-init)
+-- Get or initialise state for a player (lazy-init)
 local function get_state(player_name)
     if not player_states[player_name] then
         player_states[player_name] = {
             layer = "basis",
             types = { nodes = true, items = true, entities = true },
-            mods  = nil,   -- nil = alle Mods aktiv bis Picker geöffnet wird
+            mods  = nil,   -- nil = all mods active until picker is opened
         }
     end
     return player_states[player_name]
 end
 
--- State aufräumen wenn Spieler geht (State bleibt in player_states für Persistenz,
--- aber wir speichern damit keine veralteten Einträge akkumulieren)
+-- Save state when player leaves (keeps player_states tidy,
+-- avoids accumulating stale entries)
 core.register_on_leaveplayer(function(player)
     M.save_state()
 end)
 
 -- ===========================================================================
--- Mod-Liste (gecacht, ändert sich nicht zur Laufzeit)
+-- Mod list (cached, does not change after mods_loaded)
 -- ===========================================================================
 
 local _mod_list_cache = nil
@@ -138,7 +138,7 @@ local function get_all_mods()
     return _mod_list_cache
 end
 
--- Lazy-Init des Mod-States eines Spielers: alle Mods standardmäßig ausgewählt
+-- Lazy-init mod state for a player: all mods selected by default
 local function ensure_mod_state(ps)
     if ps.mods == nil then
         ps.mods = {}
@@ -149,8 +149,8 @@ local function ensure_mod_state(ps)
 end
 
 -- ===========================================================================
--- Caches für teure Registry-Abfragen
--- Nodes/Items/Entities ändern sich nach mods_loaded nicht mehr → einmal bauen
+-- Caches for expensive registry queries.
+-- Nodes/Items/Entities don't change after mods_loaded — build once.
 -- ===========================================================================
 
 -- { [mod_name] = { nodes={}, items={}, entities={} } }
@@ -194,7 +194,7 @@ local function build_registry_cache()
         end
     end
 
-    -- Einträge in jedem Mod alphabetisch sortieren
+    -- Sort entries within each mod alphabetically
     for _, mod_data in pairs(_registry_cache) do
         table.sort(mod_data.nodes)
         table.sort(mod_data.items)
@@ -204,42 +204,44 @@ local function build_registry_cache()
     return _registry_cache
 end
 
--- Cache nach mods_loaded aufbauen (alle Mods geladen, Registry vollständig)
+-- Build registry cache after mods_loaded (all mods loaded, registry complete)
 core.register_on_mods_loaded(function()
     build_registry_cache()
     load_state()
-    core.log("action", "[basic_context] Registry-Cache aufgebaut, State geladen")
+    core.log("action", "[basic_context] registry cache built, state loaded")
 end)
 
 -- ===========================================================================
 -- BASIS-LAYER Hilfsfunktionen
 -- ===========================================================================
 
--- Servername + Game + Engine + Spielzeit + Spieleranzahl
+-- Server name + game + engine + in-game time + player count
 local function build_server_info()
     local parts = {}
 
     local version  = core.get_version()
     local gameinfo = core.get_game_info()
 
-    table.insert(parts, "Server: "  .. (core.settings:get("server_name") or "unnamed"))
-    table.insert(parts, "Game: "    .. (gameinfo.name or "Luanti"))
-    table.insert(parts, "Engine: "  .. (version.project or "Luanti") .. " " .. (version.string or ""))
+    -- Explicit engine identity first — prevents LLM from confusing this with Minecraft
+    table.insert(parts, "Engine: " .. (version.project or "Luanti") .. " " .. (version.string or "")
+        .. "  [Luanti/Minetest — NOT Minecraft. Lua API, not Java/Bedrock.]")
+    table.insert(parts, "Game: "   .. (gameinfo.name or "Luanti"))
+    table.insert(parts, "Server: " .. (core.settings:get("server_name") or "unnamed"))
 
-    -- Spielzeit (Tageszeit als HH:MM)
+    -- In-game time (time of day as HH:MM)
     local tod  = core.get_timeofday() * 24000
     local hour = math.floor(tod / 1000)
     local min  = math.floor((tod % 1000) / 1000 * 60)
     table.insert(parts, string.format("In-game time: %02d:%02d", hour, min))
 
-    -- Aktive Spieler
+    -- Online players
     local players = core.get_connected_players()
     table.insert(parts, "Players online: " .. #players)
 
     return table.concat(parts, "\n")
 end
 
--- Spieler-eigene Infos
+-- Player's own info
 local function build_player_info(player_name)
     local player = core.get_player_by_name(player_name)
     if not player then return "(player not found)" end
@@ -260,7 +262,7 @@ local function build_player_info(player_name)
     return table.concat(parts, "\n")
 end
 
--- Alle anderen Spieler: Name + Position
+-- All other players: name + position
 local function build_other_players(player_name)
     local players = core.get_connected_players()
     local lines   = {}
@@ -277,29 +279,82 @@ local function build_other_players(player_name)
 end
 
 -- Alle registrierten Chat-Commands: Name + Beschreibung + Params-Syntax
--- Ungefiltert — das LLM bekommt alles
-local function build_commands()
+-- Builds the command list for the LLM context.
+-- Filters to commands the player actually has privilege to run.
+-- Caps at MAX_COMMANDS to avoid token budget explosion on modded servers.
+-- Standard well-known commands (teleport, give, time, etc.) are always shown
+-- first; mod-specific commands fill the remaining slots.
+local MAX_COMMANDS = 40
+
+-- Commands the LLM should always see when the player has access,
+-- because they are universally useful for agent actions.
+local PRIORITY_COMMANDS = {
+    "teleport", "tp", "give", "time", "weather", "set_password",
+    "spawn", "home", "sethome", "kill", "kick", "ban", "unban",
+    "grant", "revoke", "privs", "clearobjects", "deleteblocks",
+}
+local PRIORITY_SET = {}
+for _, c in ipairs(PRIORITY_COMMANDS) do PRIORITY_SET[c] = true end
+
+local function build_commands(player_name)
     local cmds = core.registered_chatcommands
     if not cmds then return "(no commands registered)" end
 
-    local sorted = {}
-    for name, def in pairs(cmds) do
-        table.insert(sorted, { name = name, def = def })
-    end
-    table.sort(sorted, function(a, b) return a.name < b.name end)
+    local player_privs = core.get_player_privs(player_name) or {}
+    local is_root      = player_privs["llm_root"] == true
 
-    local lines = { "Available chat commands:" }
-    for _, entry in ipairs(sorted) do
-        local name = entry.name
-        local def  = entry.def
-        local desc = def.description or ""
-        local params = def.params or ""
-
-        if params ~= "" then
-            table.insert(lines, string.format("  /%s %s — %s", name, params, desc))
-        else
-            table.insert(lines, string.format("  /%s — %s", name, desc))
+    -- Helper: does the player have all required privs for a command?
+    local function can_run(def)
+        if is_root then return true end
+        if not def.privs or next(def.privs) == nil then return true end
+        for priv in pairs(def.privs) do
+            if not player_privs[priv] then return false end
         end
+        return true
+    end
+
+    -- Separate into priority and other, both filtered by privilege
+    local priority, others = {}, {}
+    for name, def in pairs(cmds) do
+        if can_run(def) then
+            local entry = { name = name, def = def }
+            if PRIORITY_SET[name] then
+                table.insert(priority, entry)
+            else
+                table.insert(others, entry)
+            end
+        end
+    end
+
+    table.sort(priority, function(a, b) return a.name < b.name end)
+    table.sort(others,   function(a, b) return a.name < b.name end)
+
+    -- Merge: priority first, then fill up to MAX_COMMANDS with others
+    local merged = {}
+    for _, e in ipairs(priority) do table.insert(merged, e) end
+    for _, e in ipairs(others) do
+        if #merged >= MAX_COMMANDS then break end
+        table.insert(merged, e)
+    end
+
+    local total_accessible = #priority + #others
+    local lines = { "Available chat commands (player-accessible, "
+        .. #merged .. "/" .. total_accessible .. "):" }
+
+    for _, entry in ipairs(merged) do
+        local desc   = entry.def.description or ""
+        local params = entry.def.params or ""
+        if params ~= "" then
+            table.insert(lines, string.format("  /%s %s — %s", entry.name, params, desc))
+        else
+            table.insert(lines, string.format("  /%s — %s", entry.name, desc))
+        end
+    end
+
+    if total_accessible > MAX_COMMANDS then
+        table.insert(lines, string.format(
+            "  … and %d more (use run_chat_command with any valid command name)",
+            total_accessible - MAX_COMMANDS))
     end
 
     return table.concat(lines, "\n")
@@ -309,7 +364,7 @@ end
 -- ERWEITERT-LAYER Hilfsfunktionen
 -- ===========================================================================
 
--- Baut den erweiterten Kontext-Block aus Registry-Cache + Spieler-Filterstate
+-- Builds the extended context block from registry cache + player filter state
 local function build_extended(ps)
     local cache = build_registry_cache()
     ensure_mod_state(ps)
@@ -318,7 +373,7 @@ local function build_extended(ps)
     local mod_sel  = ps.mods
     local parts    = {}
 
-    -- Geordnete Mod-Liste für deterministischen Output
+    -- Ordered mod list for deterministic output
     local selected_mods = {}
     for mod, selected in pairs(mod_sel) do
         if selected then table.insert(selected_mods, mod) end
@@ -373,7 +428,7 @@ end
 
 function M.set_layer(player_name, layer)
     if layer ~= "basis" and layer ~= "erweitert" then
-        core.log("warning", "[basic_context] set_layer: ungültiger Layer: " .. tostring(layer))
+        core.log("warning", "[basic_context] set_layer: invalid layer: " .. tostring(layer))
         return
     end
     get_state(player_name).layer = layer
@@ -439,15 +494,15 @@ end
 
 -- ===========================================================================
 -- PUBLIC API — M.get(player_name)
--- Hauptfunktion: gibt den vollständigen Kontext-String zurück.
--- Wird von agent.lua's do_iteration() pro Iteration aufgerufen.
+-- Main function: returns the full context string.
+-- Called by agent.lua's do_iteration() on every iteration.
 -- ===========================================================================
 
 function M.get(player_name)
     local ps     = get_state(player_name)
     local parts  = {}
 
-    -- ── BASIS-LAYER (immer) ────────────────────────────────────────────────
+    -- ── BASIS layer (always) ─────────────────────────────────────────────
 
     table.insert(parts, "=== GAME CONTEXT ===")
 
@@ -461,9 +516,9 @@ function M.get(player_name)
     table.insert(parts, build_other_players(player_name))
 
     table.insert(parts, "-- Commands --")
-    table.insert(parts, build_commands())
+    table.insert(parts, build_commands(player_name))
 
-    -- ── ERWEITERT-LAYER (opt-in) ───────────────────────────────────────────
+    -- ── ERWEITERT layer (opt-in) ──────────────────────────────────────────
 
     if ps.layer == "erweitert" then
         table.insert(parts, "-- Extended Registry --")
@@ -477,6 +532,6 @@ end
 
 -- ===========================================================================
 
-core.log("action", "[basic_context] Modul geladen")
+core.log("action", "[basic_context] module loaded")
 
 return M

@@ -75,6 +75,7 @@ local function reset_state(name, goal)
         goal      = goal,
         history   = {},
         snapshots = {},
+        options   = options,   -- stored so do_iteration can read max_iterations
     }
     return agent_state[name]
 end
@@ -117,8 +118,18 @@ end
 -- Settings helpers
 -- ===========================================================================
 
-local function cfg_max_iterations()
-    return tonumber(core.settings:get("llm_agent_max_iterations")) or 8
+-- Returns the effective max iterations for a run.
+-- options.max_iterations (player preference) is respected if within 1..server_max.
+-- The server setting is always the ceiling.
+local function cfg_max_iterations(options)
+    local srv_max = tonumber(core.settings:get("llm_agent_max_iterations")) or 8
+    if options and options.max_iterations then
+        local req = tonumber(options.max_iterations)
+        if req and req >= 1 and req <= srv_max then
+            return req
+        end
+    end
+    return srv_max
 end
 
 local function cfg_timeout()
@@ -555,13 +566,13 @@ local function do_iteration(state, player_name, manifest_text, addon_filter, cal
         end
 
         -- Max iterations check
-        if iteration >= cfg_max_iterations() then
+        if iteration >= cfg_max_iterations(state.options) then
             state.running = false
             if callbacks.on_done then
                 pcall(callbacks.on_done, {
                     ok       = true,
                     finished = false,
-                    reason   = "reached max iterations (" .. cfg_max_iterations() .. ")",
+                    reason   = "reached max iterations (" .. cfg_max_iterations(state.options) .. ")",
                     steps    = state.history,
                 })
             end
@@ -599,6 +610,15 @@ end
 function M.run(player_name, goal, options, callbacks)
     options   = options   or {}
     callbacks = callbacks or {}
+
+    -- Master switch — checked before anything else
+    if not core.settings:get_bool("llm_agent_enabled", true) then
+        if callbacks.on_error then
+            pcall(callbacks.on_error,
+                "Agent is disabled by server configuration (llm_agent_enabled = false)")
+        end
+        return
+    end
 
     -- Prevent double-run
     local existing = agent_state[player_name]

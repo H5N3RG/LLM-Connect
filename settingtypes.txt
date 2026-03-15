@@ -1,1 +1,165 @@
- 
+# ===========================================================================
+# LLM Connect — Luanti Mod Settings
+# ===========================================================================
+# Version: 1.0.0-dev
+# ===========================================================================
+
+
+# === API Connection ===
+
+llm_api_key              (API Key)                                    string
+llm_api_url              (API URL – OpenAI-compatible endpoint)       string
+llm_model                (Model name)                                 string
+
+llm_max_tokens           (Max tokens – response length)               int    4000   500   16384
+llm_max_tokens_integer   (Send max_tokens as integer)                 bool   true
+
+llm_temperature          (Temperature – creativity, 0..2)             float  0.7    0.0   2.0
+llm_top_p                (Top P – nucleus sampling, 0..1)             float  0.9    0.0   1.0
+llm_presence_penalty     (Presence penalty, -2..2)                    float  0.0   -2.0   2.0
+llm_frequency_penalty    (Frequency penalty, -2..2)                   float  0.0   -2.0   2.0
+
+# Enable verbose API request/response logging to the server log.
+llm_debug                (Enable debug logging)                       bool   false
+
+
+# === Timeouts ===
+
+# Global fallback timeout in seconds. Applies to all LLM requests unless a
+# per-mode override is set.
+llm_timeout              (Global request timeout in seconds)          int    120    30    600
+
+# Per-mode overrides. Set to 0 to inherit the global llm_timeout.
+llm_timeout_chat         (Chat mode timeout override, 0=global)       int    0      0     600
+llm_timeout_ide          (IDE mode timeout override, 0=global)        int    0      0     600
+llm_timeout_agent        (Agent loop timeout override, 0=global)      int    0      0     600
+
+
+# === Chat ===
+
+# Max number of messages from chat history sent per LLM request.
+# Oldest messages are dropped first when the limit is exceeded.
+llm_context_max_history  (Max chat history messages sent per request) int    20     2     100
+
+
+# === Language ===
+
+# LLM response language. "en" injects no language instruction (saves tokens).
+# All other values prepend a language instruction to each request.
+llm_language             (Response language)                          enum   en   en,de,es,fr,it,pt,ru,zh,ja,ko,ar,hi,tr,nl,pl,sv,da,no,fi,cs,hu,ro,el,th,vi,id,ms,he,bn,uk
+
+# How many times to repeat the language instruction per request.
+# Increase to 2–3 if the model keeps switching back to English.
+llm_language_instruction_repeat (Repeat language instruction N times) int    1      0     5
+
+
+# === Agent ===
+
+# Master switch — disables all agent runs server-wide when false.
+# Individual players also need the llm_agent privilege to use the agent.
+# Useful to temporarily lock down agency on public servers without revoking privileges.
+llm_agent_enabled        (Enable agent mode globally)                 bool   true
+
+# Maximum number of LLM iterations per agent run.
+# The agent stops when the LLM signals done=true, hits a hard error, or
+# reaches this limit.
+llm_agent_max_iterations (Max agent loop iterations)                  int    8      1     32
+
+# Take a world snapshot before each agent run to support undo.
+# Requires at least one loaded addon to implement snapshot_hook.
+llm_agent_snapshot       (Snapshot world state before agent run)      bool   true
+
+# Comma-separated list of chat commands the agent may execute via the
+# built-in run_chat_command tool. Empty = all commands the player can run.
+# Example: //set,//replace,//stack
+llm_agent_command_whitelist (Agent command whitelist, empty=all)      string
+
+# Comma-separated list of addon IDs that are active by default.
+# Empty = all registered addons are active by default.
+# Per-player overrides set in-game via the Addons panel always take precedence.
+llm_agent_addons_enabled (Addon IDs enabled by default, empty=all)   string
+
+
+# === Smart Lua IDE ===
+
+# Hot-reload the world after a successful sandboxed execution.
+# Triggers a /reload equivalent so new nodes/items appear without full restart.
+# TODO: not yet implemented — see smart_lua_ide/TODO.txt
+llm_ide_hot_reload             (Hot-reload world after successful execution)  bool  true
+
+# Auto-save the code buffer to a temp file whenever it changes.
+# Prevents work loss on crash or accidental IDE close.
+# TODO: not yet implemented — see smart_lua_ide/TODO.txt
+llm_ide_auto_save              (Auto-save code buffer on changes)             bool  true
+
+# Enforce the sandbox security restrictions for llm_dev players.
+# When false, code runs without sandboxing (full Lua access, llm_root only).
+# TODO: not yet implemented — see smart_lua_ide/TODO.txt
+llm_ide_whitelist_enabled      (Enforce sandbox security restrictions)        bool  true
+
+# Live AI suggestions while typing (Copilot-style).
+# Requires debounced globalstep + partial-code LLM call.
+# TODO: not yet implemented — see smart_lua_ide/TODO.txt
+llm_ide_live_suggestions       (Live AI suggestions while typing)             bool  false
+
+# Send the last run output to the LLM in Generate and Auto-Fix calls.
+# Allows the model to see errors and output from the previous execution.
+llm_ide_include_run_output     (Include last run output in LLM context) bool  true
+
+# Max lines of code sent as context in Generate calls.
+# Prevents token overflow on large files. 0 = no limit.
+llm_ide_max_code_context       (Max code lines sent to LLM, 0=no limit) int  300    0    2000
+
+# Max Auto-Fix iterations after a failed run. 0 = Auto-Fix disabled.
+# Each iteration calls the LLM once to fix the error and re-executes.
+llm_ide_auto_fix_iterations    (Auto-Fix max iterations, 0=off)        int   3      0    10
+
+# Inject a naming-convention guide into Generate calls.
+# Reminds the model to use the "llm_connect:" prefix for registrations.
+llm_ide_naming_guide           (Inject naming convention guide)         bool  true
+
+# Include the active mod list in IDE Generate context.
+llm_ide_context_mod_list       (Send mod list in IDE context)           bool  true
+
+# Include player position in IDE Generate context.
+# Useful for position-aware code generation (e.g. placing nodes near the player).
+llm_ide_context_player_pos     (Send player position in IDE context)    bool  true
+
+# Default API reference injection level when the IDE is opened.
+# Can be toggled live per-session in the IDE toolbar.
+#   none – no reference (default, lowest token cost)
+#   slim – ~400 tokens: most-used functions
+#   full – ~2000 tokens: comprehensive (use sparingly)
+llm_ide_api_default_level      (Default API reference level)            enum  none  none,slim,full
+
+# Maximum number of assets that can be selected at once in the IDE Asset Picker.
+llm_ide_asset_max_selected     (Max assets selectable in IDE picker)    int   32     1    128
+
+
+# ===========================================================================
+# Notes:
+#
+#   llm_timeout_*:
+#     0 = inherit global llm_timeout. Set a value only if a specific mode
+#     needs a different budget (e.g. agent loops typically need more time).
+#
+#   llm_language:
+#     "en" injects no instruction and saves tokens. For non-English output,
+#     set to the desired language code; increase llm_language_instruction_repeat
+#     if the model ignores the instruction.
+#
+#   llm_agent_command_whitelist:
+#     Leave empty to allow all commands the player already has privilege for.
+#     Restrict to specific commands on public servers.
+#
+#   llm_ide_api_default_level:
+#     "full" should only be used for complex generation tasks — it adds
+#     ~2000 tokens to every Generate call. Prefer "slim" or "none" and
+#     enable "full" per-session in the IDE when needed.
+#
+#   Runtime changes:
+#     API key, URL, model, and timeout can be updated at runtime via
+#     /llm_config without a server restart. All other settings require
+#     a restart or /llm_config_reload.
+#
+# ===========================================================================
