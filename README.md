@@ -172,13 +172,12 @@ LGPL-3.0-or-later — see [LICENSE](LICENSE)
 
 | Phase | Beschreibung | Status |
 |-------|-------------|--------|
-| A | Universal Agent Core (`agent.lua`) | ✅ Skelett fertig |
+| A | Universal Agent Core (`agent.lua`) | ✅ Fertig |
 | B | Addon Registry (`registry.lua`) | ✅ Fertig, inter-mod-operabel |
 | B+ | Basic Context (`basic_context.lua`) | ✅ Fertig |
 | B+ | `init.lua` neu (1.0 Load-Order) | ✅ Fertig |
-| C | WorldEdit Addon portieren | ⬜ Offen |
-| D | Agent System Prompts | ⬜ Offen |
-| E | Mobs Redo Addon (neu) | ⬜ Offen |
+| C | WorldEdit Addon portieren | ✅ Fertig |
+| D | Agent System Prompts | ✅ Fertig |
 | F | Main GUI + Config GUI (Agent-Panel) | ⬜ Offen |
 | G | Smart Lua IDE relocaten nach addons/ | ⬜ Offen |
 | H | Finalisierung & Release | ⬜ Offen |
@@ -187,10 +186,10 @@ LGPL-3.0-or-later — see [LICENSE](LICENSE)
 
 ## TODO A — Agent Core (`agent.lua`) ✅
 
-Skelett vollständig implementiert. Offene Punkte für spätere Iteration:
+Vollständig implementiert.
 
-- [ ] `agent_system_prompts.lua` erstellen (Prompt-Builder für Manifest + Kontext)
-- [ ] `get_agent_prompts()` in `agent.lua` verdrahten sobald Prompt-Datei existiert
+- [x] `agent_system_prompts.lua` erstellen (Prompt-Builder für Manifest + Kontext)
+- [x] `get_agent_prompts()` in `agent.lua` verdrahten
 - [ ] Integration-Test: agent.lua + registry.lua + basic_context.lua gemeinsam
 
 ---
@@ -207,55 +206,37 @@ Skelett vollständig implementiert. Offene Punkte für spätere Iteration:
 
 ---
 
-## TODO C — WorldEdit Addon portieren
+## TODO C — WorldEdit Addon portieren ✅
 
-Port von `llm_worldedit.lua` auf das neue Addon-Interface.
+Port von `llm_worldedit.lua` auf das neue Addon-Interface abgeschlossen.
 
-- [ ] `addons/worldedit_agent/worldedit_agent.lua` erstellen
-  - Alle bestehenden Dispatcher portieren:
-    `set`, `replace`, `copy`, `move`, `stack`, `flip`, `rotate`,
-    `sphere`, `cylinder`, `pyramid`, `torus`, `ellipsoid`,
-    `floodfill`, `overlay`, `replacemix`, `layers`, `erode`, `convolve`
-  - Agent/Loop-Logik entfernen (jetzt in `agent.lua`)
-  - `available()` prüft `worldedit`-Global
-  - WEA-Tools als optionale Tool-Gruppe
-  - pos1/pos2 Kontext-Injection + Nearby-Node-Sampling beibehalten
-  - Snapshot/Undo an Agent-Core delegieren
-- [ ] `addons/worldedit_agent/worldedit_system_prompts.lua` — portieren/anpassen
-- [ ] `addons/worldedit_agent/material_picker.lua` — verschieben, Pfade anpassen
+- [x] `addons/worldedit_agent/worldedit_agent.lua` — alle Dispatcher portiert:
+      `set_region`, `clear_region`, `replace`, `copy`, `move`, `stack`, `flip`,
+      `rotate`, `sphere`, `dome`, `cylinder`, `pyramid`, `cube`;
+      WEA-Tools (`torus`, `ellipsoid`, `overlay`, `erode`, `convolve`) als
+      optionale Gruppe (graceful fallback wenn WEA nicht geladen)
+- [x] `available()` prüft `worldedit`-Global
+- [x] `get_context()` — pos1/pos2 + Nearby-Node-Sampling pro Iteration
+- [x] `snapshot_hook` / `restore_hook` — Undo an Agent-Core delegiert
+- [x] Via `llm_connect.registry.register()` registriert (kein globals-Overhead)
+- [ ] `addons/worldedit_agent/worldedit_system_prompts.lua` und
+      `material_picker.lua` noch nicht portiert (Low Priority — Dispatcher
+      decken den Use-Case bereits ab; Prompts in `agent_system_prompts.lua`)
 - [ ] Root-Dateien `llm_worldedit.lua`, `worldedit_system_prompts.lua`,
-      `material_picker.lua` löschen (nach DEPRECATION_MAP)
+      `material_picker.lua` löschen (nach DEPRECATION_MAP, wenn alte Branch gemergt)
 - [ ] Regressionstest: alle WE-Funktionen gegen die Addon-Version testen
 
 ---
 
-## TODO D — Agent System Prompts
+## TODO D — Agent System Prompts ✅
 
-- [ ] `agent_system_prompts.lua` erstellen
+- [x] `agent_system_prompts.lua` erstellt
   - `build(manifest_text, context_text)` → system prompt string
-  - Manifest-Sektion: strukturierte Tool-Beschreibungen
-  - Kontext-Sektion: basic_context Output
-  - LLM Response Format dokumentieren (JSON mit thought/plan/tool_calls/done)
-  - `run_chat_command` als Built-in im Prompt erklären
-  - Hinweis: wann spezifische Tools bevorzugen vs. Command-Fallback
-- [ ] `get_agent_prompts()` in `agent.lua` mit echter Implementierung verdrahten
-
----
-
-## TODO E — Mobs Redo Addon (neu)
-
-Erste neue Community-Addon als Referenz-Implementierung.
-
-- [ ] `addons/mobs_redo/mobs_redo.lua` erstellen
-  - `available()`: prüft `mobs`-Global + Mindest-API-Surface
-  - Tools:
-    - `spawn_mob` — Mob bei Position oder beim Spieler spawnen
-    - `remove_mob` — nächsten Mob eines Typs entfernen
-    - `list_nearby_mobs` — Mobs im Radius mit Position + HP auflisten
-    - `set_mob_property` — Runtime-Property ändern (hp, tamed, owner)
-    - `kill_all_of_type` — alle Mobs eines Typs entfernen (Safety-Cap)
-  - Konfigurierbares Radius-Limit
-  - Privilege: `llm_agent` (kein zusätzliches Privilege nötig)
+  - Identity/Role-Sektion (Luanti-spezifisch, kein Minecraft-Kontext)
+  - Response-Format vollständig dokumentiert (JSON mit thought/plan/tool_calls/done)
+  - `run_chat_command` als Built-in erklärt (wann bevorzugen vs. Addon-Tools)
+  - Guidance-Sektion: Koordinaten-Syntax, Fehlerbehandlung, Planungsstil
+- [x] `get_agent_prompts()` in `agent.lua` verdrahtet (lazy-load mit Fallback)
 
 ---
 

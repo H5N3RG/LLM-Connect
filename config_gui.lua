@@ -55,14 +55,17 @@ local function tx(i) return PAD + i * (THIRD_W + 0.2) end
 -- ===========================================================================
 
 local function sep(fs, y, label)
-    table.insert(fs, string.format("box[%.2f,%.2f;%.2f,0.02;#333333]",
-        PAD, y, W - PAD * 2))
+    -- Optional label sits above the line, consuming LABEL_H of vertical space.
+    -- Caller always gets back a consistent y-advance regardless of label presence.
+    local LABEL_H = 0.35
     if label then
-        table.insert(fs, string.format("label[%.2f,%.2f;%s]",
-            PAD, y - 0.02,
+        table.insert(fs, string.format("label[%.2f,%.2f;%s]", PAD, y,
             core.colorize("#888888", label)))
+        y = y + LABEL_H
     end
-    return y + SEP_H
+    -- Separator line
+    table.insert(fs, string.format("box[%.2f,%.2f;%.2f,0.02;#333333]", PAD, y, W - PAD * 2))
+    return y + SEP_H   -- position after line
 end
 
 -- ===========================================================================
@@ -128,7 +131,7 @@ end
 -- ===========================================================================
 
 local function build_tab_api(fs, cfg)
-    local y = HEADER_H + TAB_H + PAD
+    local y = PAD   -- scroll_container-local coords start at 0
 
     -- API Key
     table.insert(fs, string.format("label[%.2f,%.2f;API Key:]", PAD, y))
@@ -161,7 +164,6 @@ local function build_tab_api(fs, cfg)
     y = y + FIELD_H + PAD
 
     y = sep(fs, y, "Response parameters")
-    y = y + 0.2
 
     -- Max Tokens + Temperature
     table.insert(fs, string.format("label[%.2f,%.2f;Max Tokens:]", PAD, y))
@@ -180,7 +182,6 @@ local function build_tab_api(fs, cfg)
     y = y + FIELD_H + PAD
 
     y = sep(fs, y, "Chat behaviour")
-    y = y + 0.2
 
     table.insert(fs, string.format("label[%.2f,%.2f;Chat system prompt (optional, empty = none):]", PAD, y))
     y = y + 0.45
@@ -194,7 +195,6 @@ local function build_tab_api(fs, cfg)
     y = y + FIELD_H + PAD
 
     y = sep(fs, y, "Timeouts")
-    y = y + 0.2
 
     -- Global timeout
     table.insert(fs, string.format("label[%.2f,%.2f;Global timeout (seconds, 30–600):]", PAD, y))
@@ -238,7 +238,7 @@ end
 -- ===========================================================================
 
 local function build_tab_agent(fs)
-    local y = HEADER_H + TAB_H + PAD
+    local y = PAD   -- scroll_container-local coords start at 0
 
     -- ── Master switch ────────────────────────────────────────
     local agent_enabled = core.settings:get_bool("llm_agent_enabled", true)
@@ -256,7 +256,6 @@ local function build_tab_agent(fs)
     y = y + 0.75 + PAD
 
     y = sep(fs, y, "Loop control")
-    y = y + 0.2
 
     -- Max iterations + Snapshot
     table.insert(fs, string.format("label[%.2f,%.2f;Max iterations per run (1–32):]", PAD, y))
@@ -276,7 +275,6 @@ local function build_tab_agent(fs)
     y = y + CB_H + PAD
 
     y = sep(fs, y, "Security")
-    y = y + 0.2
 
     -- Command whitelist
     table.insert(fs, string.format("label[%.2f,%.2f;Command whitelist for run_chat_command (empty = all allowed):]", PAD, y))
@@ -291,7 +289,6 @@ local function build_tab_agent(fs)
     y = y + FIELD_H + PAD
 
     y = sep(fs, y, "Addon defaults")
-    y = y + 0.2
 
     local addons_default_on = core.settings:get_bool("llm_agent_addons_default_on", false)
     table.insert(fs, string.format(

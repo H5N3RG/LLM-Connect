@@ -88,21 +88,109 @@ core.register_on_leaveplayer(function(player)
 end)
 
 -- ===========================================================================
--- History renderer
+-- History renderer — scroll_container mit gestapelten read-only textareas
+--
+-- Je Nachricht eine textarea mit name="" (read-only, kein Luanti-Caching).
+-- Request (user) und Response (assistant) visuell differenziert.
+-- Höhenschätzung: ceil(#text / CHARS_PER_LINE) Zeilen × LINE_H + vertikal PAD.
 -- ===========================================================================
 
-local function render_history(session)
-    if #session.history == 0 then
-        return "Welcome to LLM Connect!\nType your question below."
+local CHAT_W         = 15.5   -- Nutzbreite der textarea (W - PAD*2 - Scrollbar)
+local CHARS_PER_LINE = 88     -- Zeichen pro Zeile bei dieser Breite + Monospace
+local LINE_H         = 0.52   -- Höhe einer Textzeile in Formspec-Einheiten
+local MSG_PAD_V      = 0.30   -- vertikales Padding oben+unten pro Nachricht
+local MSG_GAP        = 0.12   -- Lücke zwischen Nachrichten
+
+local function estimate_msg_height(text)
+    if not text or text == "" then return LINE_H + MSG_PAD_V end
+    local lines = 0
+    -- Zeilenumbrüche im Text selbst zählen
+    for _ in text:gmatch("\n") do lines = lines + 1 end
+    -- Zusätzliche Wrap-Zeilen schätzen
+    for segment in (text .. "\n"):gmatch("([^\n]*)\n") do
+        lines = lines + math.max(0, math.ceil(#segment / CHARS_PER_LINE) - 1)
     end
-    local lines = {}
+    lines = math.max(1, lines + 1)
+    return lines * LINE_H + MSG_PAD_V
+end
+
+local function build_chat_history(fs, session, x, y, w, scroll_h)
+    -- Gesamthöhe des Inhalts berechnen
+    local total_h = MSG_GAP
+    local msg_heights = {}
     for _, msg in ipairs(session.history) do
         if msg.role ~= "system" then
-            local prefix = msg.role == "user" and "You: " or "[LLM]: "
-            table.insert(lines, prefix .. (msg.content or ""))
+            local h = estimate_msg_height(msg.content or "")
+            table.insert(msg_heights, h)
+            total_h = total_h + h + MSG_GAP
         end
     end
-    return table.concat(lines, "\n\n")
+    total_h = math.max(total_h, scroll_h)
+
+    -- scroll_container — Scrollbar rechts davon, außerhalb
+    local SCROLLBAR_W = 0.3
+    local inner_w     = w - SCROLLBAR_W - 0.1
+    table.insert(fs, string.format(
+        "scroll_container[%.2f,%.2f;%.2f,%.2f;chat_scroll;vertical;0.1]",
+        x, y, inner_w, scroll_h))
+
+    -- Style einmalig setzen: transparenter Hintergrund, kein Border
+    table.insert(fs, "style_type[textarea;textcolor=#d0d0d0;bgcolor=#00000000;border=false]")
+
+    local cy    = MSG_GAP
+    local msg_i = 0
+    for _, msg in ipairs(session.history) do
+        if msg.role ~= "system" then
+            msg_i = msg_i + 1
+            local mh      = msg_heights[msg_i]
+            local is_user = msg.role == "user"
+            local content = msg.content or ""
+
+            -- Hintergrundfarbe: User = leicht bläulich, Assistant = leicht grünlich
+            local bg_color = is_user and "#141e2a" or "#0f1a0f"
+            local lx       = 0.0
+
+            -- Hintergrundbox
+            table.insert(fs, string.format("box[%.2f,%.2f;%.2f,%.2f;%s]",
+                lx, cy, inner_w, mh, bg_color))
+
+            -- Linker Akzentbalken: blau für User, grün für Assistant
+            local accent = is_user and "#2255aa" or "#228833"
+            table.insert(fs, string.format("box[%.2f,%.2f;0.06,%.2f;%s]",
+                lx, cy, mh, accent))
+
+            -- Absender-Label oben links
+            local sender_color = is_user and "#7aaaff" or "#88dd88"
+            local sender_label = is_user and "You" or "LLM"
+            table.insert(fs, string.format("label[%.2f,%.2f;%s]",
+                lx + 0.18, cy + 0.14,
+                core.colorize(sender_color, sender_label)))
+
+            -- Nachrichtentext als read-only textarea (name="" → kein Caching)
+            local text_y = cy + 0.10
+            local text_h = mh - 0.10
+            table.insert(fs, string.format(
+                "textarea[%.2f,%.2f;%.2f,%.2f;;;%s]",
+                lx + 0.18, text_y, inner_w - 0.28, text_h,
+                core.formspec_escape(content)))
+
+            cy = cy + mh + MSG_GAP
+        end
+    end
+
+    -- Leerer Platzhalter wenn keine History
+    if msg_i == 0 then
+        table.insert(fs, string.format("label[%.2f,%.2f;%s]",
+            0.3, 0.4,
+            core.colorize("#444444", "Noch keine Nachrichten — schreib etwas!")))
+    end
+
+    table.insert(fs, "scroll_container_end[]")
+
+    -- Scrollbar außerhalb des containers
+    table.insert(fs, string.format(
+        "scrollbar[%.2f,%.2f;%.2f,%.2f;vertical;chat_scroll;1000]",
+        x + inner_w + 0.1, y, SCROLLBAR_W, scroll_h))
 end
 
 -- ===========================================================================
@@ -150,6 +238,7 @@ function M.show(name)
     -- Agent mode toggle (visible to anyone with llm_agent priv)
     if can_agent(name) then
         local active  = session.agent_active
+        local agent   = get_agent()
         local running = agent and agent.is_running(name)
         if running then
             -- locked while agent is executing
@@ -245,10 +334,7 @@ function M.show(name)
 
     -- ── Chat history ─────────────────────────────────────────
     local history_y = HEADER_H + PAD
-    table.insert(fs, "textarea[" .. PAD .. "," .. history_y .. ";"
-        .. (W - PAD*2) .. "," .. CHAT_H
-        .. ";history_display;;" .. core.formspec_escape(render_history(session)) .. "]")
-    table.insert(fs, "style[history_display;textcolor=#e0e0e0;bgcolor=#1a1a1a;border=false]")
+    build_chat_history(fs, session, PAD, history_y, W - PAD*2, CHAT_H)
 
     -- ── Input row ────────────────────────────────────────────
     local input_y = history_y + CHAT_H + PAD
@@ -409,9 +495,6 @@ function M.show_addons(name)
             if not s.has_priv then
                 badges = badges .. "  " .. core.colorize("#aa6622", "⚠ priv")
             end
-            table.insert(fs, string.format("label[%.2f,%.2f;%s]",
-                lx, ty + 0.62,
-                core.colorize("#888888", core.formspec_escape(desc))))
             -- Badges go on the right edge of the card
             table.insert(fs, string.format("label[%.2f,%.2f;%s]",
                 tx + col_w - 0.08, ty + 0.22,
