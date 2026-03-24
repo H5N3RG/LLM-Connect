@@ -57,7 +57,7 @@ Example format:
 -- [CORRECTED CODE HERE]
 --[[ ANALYSIS:
 - ...
-]]]]
+]]
 
 prompts.CODE_EXPLAINER = [[You are a Minetest/Luanti mod development tutor.
 
