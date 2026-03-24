@@ -203,7 +203,6 @@ function M.show(name)
         local iter    = session.iter_preference or srv_max
         -- Clamp in case server_max changed since last session
         iter = math.max(1, math.min(iter, srv_max))
-        session.iter_preference = iter
 
         local STEP_W  = 1.0   -- dec/inc button width
         local DISP_W  = 2.4   -- centre display width

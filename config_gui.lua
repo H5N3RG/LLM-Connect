@@ -369,6 +369,17 @@ function M.show(name, tab)
     -- Tab bar
     build_tabs(fs, tab)
 
+    -- Scrollable area
+    local container_y = HEADER_H + TAB_H
+    local btn_y = H - BTN_H - PAD * 2 - 0.4
+    local scroll_area_height = btn_y - container_y - PAD * 0.5
+    local inner_width = W - PAD * 2 - 0.3 - 0.1  -- SCROLLBAR_WIDTH 0.3, SPACING 0.1
+    local inner_height = scroll_area_height
+
+    -- Scroll container
+    table.insert(fs, string.format("scroll_container[%.2f,%.2f;%.2f,%.2f;llm_cfg_scroll;vertical;0.1;0.2]",
+        PAD, container_y, inner_width, inner_height))
+
     -- Tab content
     local content_bottom
     if tab == "api" then
@@ -377,8 +388,13 @@ function M.show(name, tab)
         content_bottom = build_tab_agent(fs)
     end
 
+    table.insert(fs, "scroll_container_end[]")
+
+    -- Scrollbar
+    table.insert(fs, string.format("scrollbar[%.2f,%.2f;%.2f,%.2f;vertical;llm_cfg_scroll;0]",
+        PAD + inner_width + 0.1, container_y, 0.3, inner_height))
+
     -- Bottom buttons (fixed at bottom of formspec)
-    local btn_y = H - BTN_H - PAD * 2 - 0.4
     build_bottom_buttons(fs, btn_y)
 
     core.show_formspec(name, "llm_connect:config", table.concat(fs))
