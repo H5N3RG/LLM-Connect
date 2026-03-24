@@ -74,10 +74,11 @@ local sessions = {}
 local function get_session(name)
     if not sessions[name] then
         sessions[name] = {
-            history        = {},  -- chat message history [{role, content}]
+            history         = {},   -- chat message history [{role, content, status_line?}]
             last_input      = "",   -- preserved across show() calls
             iter_preference = nil,  -- nil = use server default
             agent_active    = false, -- explicit opt-in toggle, default off
+            chat_scroll     = 0,    -- 0 = top, 1000 = bottom
         }
     end
     return sessions[name]
@@ -95,44 +96,63 @@ end)
 -- Höhenschätzung: ceil(#text / CHARS_PER_LINE) Zeilen × LINE_H + vertikal PAD.
 -- ===========================================================================
 
-local CHAT_W         = 15.5   -- Nutzbreite der textarea (W - PAD*2 - Scrollbar)
-local CHARS_PER_LINE = 88     -- Zeichen pro Zeile bei dieser Breite + Monospace
-local LINE_H         = 0.52   -- Höhe einer Textzeile in Formspec-Einheiten
-local MSG_PAD_V      = 0.30   -- vertikales Padding oben+unten pro Nachricht
-local MSG_GAP        = 0.12   -- Lücke zwischen Nachrichten
+local CHAT_W              = 15.5   -- Referenzbreite für die Wrap-Schätzung
+local CHARS_PER_LINE      = 88     -- Zeichen pro Zeile bei CHAT_W
+local LINE_H              = 0.52   -- Höhe einer Textzeile in Formspec-Einheiten
+local MSG_HEADER_H        = 0.44   -- Platz für Sender / Statuszeile
+local MSG_STATUS_H        = 0.34   -- zusätzliche Meta-Zeile für Live-Feedback
+local MSG_TEXT_PAD_B      = 0.12   -- unterer Abstand des Textbereichs
+local MSG_PAD_V           = 0.18   -- zusätzliches vertikales Kartenpadding
+local MSG_GAP             = 0.16   -- Lücke zwischen Nachrichten
+local USER_CARD_INSET     = 1.15   -- User-Karten leicht nach rechts versetzen
+local ASSISTANT_CARD_INSET = 0.10  -- Assistant-Karten fast vollbreit
 
-local function estimate_msg_height(text)
-    if not text or text == "" then return LINE_H + MSG_PAD_V end
+local function estimate_wrapped_lines(text, width)
+    if not text or text == "" then return 1 end
+    local chars_per_line = math.max(18, math.floor(CHARS_PER_LINE * (width / CHAT_W)))
     local lines = 0
-    -- Zeilenumbrüche im Text selbst zählen
     for _ in text:gmatch("\n") do lines = lines + 1 end
-    -- Zusätzliche Wrap-Zeilen schätzen
     for segment in (text .. "\n"):gmatch("([^\n]*)\n") do
-        lines = lines + math.max(0, math.ceil(#segment / CHARS_PER_LINE) - 1)
+        lines = lines + math.max(0, math.ceil(#segment / chars_per_line) - 1)
     end
-    lines = math.max(1, lines + 1)
-    return lines * LINE_H + MSG_PAD_V
+    return math.max(1, lines + 1)
+end
+
+local function estimate_msg_height(msg, card_w)
+    local text = (msg and msg.content) or ""
+    local status_line = (msg and msg.status_line) or ""
+    local text_lines = estimate_wrapped_lines(text, math.max(2.0, card_w - 0.34))
+    local h = MSG_HEADER_H + (text_lines * LINE_H) + MSG_TEXT_PAD_B + MSG_PAD_V
+    if status_line ~= "" then
+        h = h + MSG_STATUS_H
+    end
+    return h
 end
 
 local function build_chat_history(fs, session, x, y, w, scroll_h)
+    -- scroll_container — Scrollbar rechts davon, außerhalb
+    local SCROLLBAR_W = 0.3
+    local inner_w     = w - SCROLLBAR_W - 0.1
+
     -- Gesamthöhe des Inhalts berechnen
     local total_h = MSG_GAP
     local msg_heights = {}
     for _, msg in ipairs(session.history) do
         if msg.role ~= "system" then
-            local h = estimate_msg_height(msg.content or "")
+            local is_user = msg.role == "user"
+            local card_inset = is_user and USER_CARD_INSET or ASSISTANT_CARD_INSET
+            local card_w = inner_w - card_inset
+            local h = estimate_msg_height(msg, card_w)
             table.insert(msg_heights, h)
             total_h = total_h + h + MSG_GAP
         end
     end
     total_h = math.max(total_h, scroll_h)
 
-    -- scroll_container — Scrollbar rechts davon, außerhalb
-    local SCROLLBAR_W = 0.3
-    local inner_w     = w - SCROLLBAR_W - 0.1
+    local scroll_val  = session.chat_scroll or 0
     table.insert(fs, string.format(
-        "scroll_container[%.2f,%.2f;%.2f,%.2f;chat_scroll;vertical;0.1]",
-        x, y, inner_w, scroll_h))
+        "scroll_container[%.2f,%.2f;%.2f,%.2f;chat_scroll;vertical;%.2f]",
+        x, y, inner_w, scroll_h, scroll_val))
 
     -- Style einmalig setzen: transparenter Hintergrund, kein Border
     table.insert(fs, "style_type[textarea;textcolor=#d0d0d0;bgcolor=#00000000;border=false]")
@@ -142,36 +162,52 @@ local function build_chat_history(fs, session, x, y, w, scroll_h)
     for _, msg in ipairs(session.history) do
         if msg.role ~= "system" then
             msg_i = msg_i + 1
-            local mh      = msg_heights[msg_i]
-            local is_user = msg.role == "user"
-            local content = msg.content or ""
+            local mh          = msg_heights[msg_i]
+            local is_user     = msg.role == "user"
+            local content     = msg.content or ""
+            local status_line = msg.status_line or ""
 
-            -- Hintergrundfarbe: User = leicht bläulich, Assistant = leicht grünlich
-            local bg_color = is_user and "#141e2a" or "#0f1a0f"
-            local lx       = 0.0
+            -- Leicht versetzte Karten = chat-artiger statt Log-Fullwidth-Look
+            local lx     = is_user and USER_CARD_INSET or ASSISTANT_CARD_INSET
+            local card_w = inner_w - lx
+
+            -- Hintergrundfarbe: User = blau getönt, Assistant = grün getönt
+            local bg_color = is_user and "#142033" or "#101a13"
 
             -- Hintergrundbox
             table.insert(fs, string.format("box[%.2f,%.2f;%.2f,%.2f;%s]",
-                lx, cy, inner_w, mh, bg_color))
+                lx, cy, card_w, mh, bg_color))
 
             -- Linker Akzentbalken: blau für User, grün für Assistant
-            local accent = is_user and "#2255aa" or "#228833"
+            local accent = is_user and "#2e6cff" or "#2f9b52"
             table.insert(fs, string.format("box[%.2f,%.2f;0.06,%.2f;%s]",
                 lx, cy, mh, accent))
 
+            -- Subtiler Header-Streifen für bessere Trennung
+            table.insert(fs, string.format("box[%.2f,%.2f;%.2f,0.34;%s]",
+                lx + 0.06, cy, card_w - 0.06, is_user and "#172841" or "#132218"))
+
             -- Absender-Label oben links
-            local sender_color = is_user and "#7aaaff" or "#88dd88"
+            local sender_color = is_user and "#9bc0ff" or "#9be2a2"
             local sender_label = is_user and "You" or "LLM"
             table.insert(fs, string.format("label[%.2f,%.2f;%s]",
-                lx + 0.18, cy + 0.14,
+                lx + 0.20, cy + 0.12,
                 core.colorize(sender_color, sender_label)))
 
+            local text_y = cy + MSG_HEADER_H
+            if status_line ~= "" then
+                table.insert(fs, string.format("label[%.2f,%.2f;%s]",
+                    lx + 1.00, cy + 0.12,
+                    core.colorize(is_user and "#6f89b3" or "#6ab47c",
+                        core.formspec_escape(status_line))))
+                text_y = text_y + MSG_STATUS_H
+            end
+
             -- Nachrichtentext als read-only textarea (name="" → kein Caching)
-            local text_y = cy + 0.10
-            local text_h = mh - 0.10
+            local text_h = math.max(LINE_H, mh - (text_y - cy) - MSG_TEXT_PAD_B)
             table.insert(fs, string.format(
                 "textarea[%.2f,%.2f;%.2f,%.2f;;;%s]",
-                lx + 0.18, text_y, inner_w - 0.28, text_h,
+                lx + 0.18, text_y, card_w - 0.28, text_h,
                 core.formspec_escape(content)))
 
             cy = cy + mh + MSG_GAP
@@ -189,8 +225,8 @@ local function build_chat_history(fs, session, x, y, w, scroll_h)
 
     -- Scrollbar außerhalb des containers
     table.insert(fs, string.format(
-        "scrollbar[%.2f,%.2f;%.2f,%.2f;vertical;chat_scroll;1000]",
-        x + inner_w + 0.1, y, SCROLLBAR_W, scroll_h))
+        "scrollbar[%.2f,%.2f;%.2f,%.2f;vertical;chat_scroll;%.2f]",
+        x + inner_w + 0.1, y, SCROLLBAR_W, scroll_h, scroll_val))
 end
 
 -- ===========================================================================
@@ -526,6 +562,45 @@ function M.show_addons(name)
 end
 
 -- ===========================================================================
+-- Agent live card helpers
+-- ===========================================================================
+
+local function update_last_assistant_card(session, body, status_line)
+    for i = #session.history, 1, -1 do
+        if session.history[i].role == "assistant" then
+            if body ~= nil then session.history[i].content = body end
+            if status_line ~= nil then session.history[i].status_line = status_line end
+            return
+        end
+    end
+end
+
+local function compact_status_line(iter, max_iter, plan, results)
+    local ok_count, fail_count = 0, 0
+    for _, r in ipairs(results or {}) do
+        if r.tool ~= "*" then
+            if r.ok then
+                ok_count = ok_count + 1
+            else
+                fail_count = fail_count + 1
+            end
+        end
+    end
+
+    local prefix = string.format("Step %d/%d", iter, max_iter)
+    local summary = tostring(plan or "working")
+    summary = summary:gsub("\n+", " "):gsub("%s+", " ")
+    if #summary > 46 then
+        summary = summary:sub(1, 43) .. "..."
+    end
+
+    if ok_count == 0 and fail_count == 0 then
+        return prefix .. " — " .. summary
+    end
+    return string.format("%s — %s  [✓%d ✗%d]", prefix, summary, ok_count, fail_count)
+end
+
+-- ===========================================================================
 -- Send: dispatch to agent or plain chat
 -- ===========================================================================
 
@@ -539,64 +614,59 @@ local function do_send(name, input, session)
     local use_agent = can_agent(name) and agent ~= nil and session.agent_active
 
     if use_agent then
-        -- Agent mode: stream step feedback into history
-        local placeholder = "(agent running…)"
-        table.insert(session.history, { role = "user",      content = input })
-        table.insert(session.history, { role = "assistant", content = placeholder })
+        table.insert(session.history, { role = "user", content = input })
+        table.insert(session.history, {
+            role = "assistant",
+            content = "Agent active…",
+            status_line = "Preparing agent…",
+        })
+        session.chat_scroll = 1000
         M.show(name)
 
         local srv_max  = tonumber(core.settings:get("llm_agent_max_iterations")) or 8
-        local iter_cap = math.max(1, math.min(
-            session.iter_preference or srv_max, srv_max))
+        local iter_cap = math.max(1, math.min(session.iter_preference or srv_max, srv_max))
 
         agent.run(name, input, { max_iterations = iter_cap }, {
             on_thought = function(thought)
-                -- Replace placeholder with thought preview
-                for i = #session.history, 1, -1 do
-                    if session.history[i].content == placeholder
-                    or session.history[i].content:match("^%💭") then
-                        session.history[i].content = "💭 " .. thought
-                        break
-                    end
+                local preview = tostring(thought or "thinking")
+                preview = preview:gsub("\n+", " "):gsub("%s+", " ")
+                if #preview > 80 then
+                    preview = preview:sub(1, 77) .. "..."
                 end
+                update_last_assistant_card(session, "Agent active…", "💭 " .. preview)
+                session.chat_scroll = 1000
                 M.show(name)
             end,
             on_step = function(iter, plan, results)
-                local lines = { "Step " .. iter .. ": " .. plan }
-                for _, r in ipairs(results) do
+                local body = "Agent active…"
+                local first_tool_line
+                for _, r in ipairs(results or {}) do
                     if r.tool ~= "*" then
-                        table.insert(lines,
-                            "  " .. (r.ok and "✓" or "✗") .. " "
-                            .. r.tool .. ": "
-                            .. tostring(r.message):sub(1, 80))
-                    end
-                end
-                -- Replace last assistant entry with running step log
-                for i = #session.history, 1, -1 do
-                    if session.history[i].role == "assistant" then
-                        session.history[i].content = table.concat(lines, "\n")
+                        local mark = r.ok and "✓" or "✗"
+                        local msg = tostring(r.message or ""):gsub("\n+", " "):gsub("%s+", " ")
+                        first_tool_line = string.format("%s %s — %s", mark, tostring(r.tool), msg)
                         break
                     end
                 end
+                if first_tool_line and #first_tool_line > 92 then
+                    first_tool_line = first_tool_line:sub(1, 89) .. "..."
+                end
+                if first_tool_line and first_tool_line ~= "" then
+                    body = first_tool_line
+                end
+                update_last_assistant_card(session, body, compact_status_line(iter, iter_cap, plan, results))
+                session.chat_scroll = 1000
                 M.show(name)
             end,
             on_done = function(result)
                 local summary = agent.format_results(result)
-                for i = #session.history, 1, -1 do
-                    if session.history[i].role == "assistant" then
-                        session.history[i].content = summary
-                        break
-                    end
-                end
+                update_last_assistant_card(session, summary, "")
+                session.chat_scroll = 1000
                 M.show(name)
             end,
             on_error = function(err)
-                for i = #session.history, 1, -1 do
-                    if session.history[i].role == "assistant" then
-                        session.history[i].content = "✗ Error: " .. tostring(err)
-                        break
-                    end
-                end
+                update_last_assistant_card(session, "✗ Error: " .. tostring(err), "Agent aborted")
+                session.chat_scroll = 1000
                 M.show(name)
             end,
         })
@@ -607,7 +677,6 @@ local function do_send(name, input, session)
         local cfg = llm_api.config
         local max_h = cfg.context_max_history or 20
 
-        -- Trim history to max
         local start = math.max(1, #session.history - max_h + 1)
         for i = start, #session.history do
             table.insert(messages, session.history[i])
@@ -616,40 +685,38 @@ local function do_send(name, input, session)
         table.insert(session.history, { role = "user", content = input })
         table.insert(messages,        { role = "user", content = input })
 
-        -- Inject system messages: custom prompt first, then basic_context
         local sys_prompt = core.settings:get("llm_chat_system_prompt") or ""
         sys_prompt = sys_prompt:match("^%s*(.-)%s*$")
         if sys_prompt ~= "" then
             table.insert(messages, 1, { role = "system", content = sys_prompt })
         end
 
-        -- Inject basic_context as system message if available
         local basic_ctx = _G.basic_context
         if basic_ctx and basic_ctx.get then
             local ctx = basic_ctx.get(name)
             if ctx and ctx ~= "" then
-                -- Insert after custom prompt (or at position 1 if no custom prompt)
                 local pos = (sys_prompt ~= "") and 2 or 1
                 table.insert(messages, pos, { role = "system", content = ctx })
             end
         end
 
         table.insert(session.history, { role = "assistant", content = "…" })
+        session.chat_scroll = 1000
         M.show(name)
 
         llm_api.request(messages, function(result)
-            -- Replace placeholder
             for i = #session.history, 1, -1 do
-                if session.history[i].role == "assistant"
-                and session.history[i].content == "…" then
+                if session.history[i].role == "assistant" and session.history[i].content == "…" then
                     if result.success then
                         session.history[i].content = result.content or "(no response)"
                     else
                         session.history[i].content = "✗ Error: " .. (result.error or "unknown")
                     end
+                    session.history[i].status_line = nil
                     break
                 end
             end
+            session.chat_scroll = 1000
             M.show(name)
         end, { timeout = llm_api.get_timeout("chat") })
     end
@@ -695,8 +762,16 @@ function M.handle_fields(name, formname, fields)
 
     local session = get_session(name)
 
+    if fields.chat_scroll then
+        local scroll_val = tonumber(tostring(fields.chat_scroll):match("([%-%d%.]+)$"))
+        if scroll_val then
+            session.chat_scroll = math.max(0, math.min(1000, scroll_val))
+        end
+    end
+
     -- ── Agent mode toggle ───────────────────────────────────
     if fields.toggle_agent then
+        local agent = get_agent()
         local running = agent and agent.is_running(name)
         if not running then
             session.agent_active = not session.agent_active
