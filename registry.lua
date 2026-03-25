@@ -550,6 +550,52 @@ function M.get_manifest(player_name, addon_filter)
     return manifest
 end
 
+local function stringify_param_desc(pdesc)
+    if type(pdesc) == "string" then
+        return pdesc
+    end
+    if type(pdesc) ~= "table" then
+        return tostring(pdesc)
+    end
+
+    local parts = {}
+    if pdesc.type then table.insert(parts, tostring(pdesc.type)) end
+    if pdesc.description and pdesc.description ~= "" then
+        table.insert(parts, tostring(pdesc.description)) end
+    if pdesc.enum and type(pdesc.enum) == "table" and #pdesc.enum > 0 then
+        table.insert(parts, "enum=" .. table.concat(pdesc.enum, ", ")) end
+    if pdesc.default ~= nil then
+        table.insert(parts, "default=" .. tostring(pdesc.default)) end
+    if #parts == 0 then return "(schema)" end
+    return table.concat(parts, " | ")
+end
+
+local function manifest_param_lines(parameters)
+    local lines = {}
+    if type(parameters) ~= "table" then
+        return lines
+    end
+
+    if type(parameters.properties) == "table" then
+        local required = {}
+        if type(parameters.required) == "table" then
+            for _, name in ipairs(parameters.required) do required[name] = true end
+        end
+        for pname, pdesc in pairs(parameters.properties) do
+            local suffix = required[pname] and " [required]" or ""
+            table.insert(lines, "    - " .. pname .. suffix .. ": " .. stringify_param_desc(pdesc))
+        end
+        table.sort(lines)
+        return lines
+    end
+
+    for pname, pdesc in pairs(parameters) do
+        table.insert(lines, "    - " .. pname .. ": " .. stringify_param_desc(pdesc))
+    end
+    table.sort(lines)
+    return lines
+end
+
 function M.manifest_to_text(manifest)
     if not manifest or #manifest == 0 then
         return "(keine Tools verfügbar — Addons deaktiviert oder nicht geladen)"
@@ -571,18 +617,14 @@ function M.manifest_to_text(manifest)
         table.insert(lines, "### " .. group.label .. "  [" .. addon_id .. "]")
         for _, tool in ipairs(group.tools) do
             table.insert(lines, "  tool: " .. tool.full_name)
-            table.insert(lines, "  desc: " .. tool.description)
-            local param_lines = {}
-            for pname, pdesc in pairs(tool.parameters) do
-                table.insert(param_lines, "    - " .. pname .. ": " .. pdesc)
-            end
+            table.insert(lines, "  desc: " .. tostring(tool.description or ""))
+            local param_lines = manifest_param_lines(tool.parameters)
             if #param_lines > 0 then
-                table.sort(param_lines)
                 table.insert(lines, "  params:")
                 for _, pl in ipairs(param_lines) do table.insert(lines, pl) end
             end
             if tool.returns then
-                table.insert(lines, "  returns: " .. tool.returns)
+                table.insert(lines, "  returns: " .. tostring(tool.returns))
             end
             table.insert(lines, "")
         end

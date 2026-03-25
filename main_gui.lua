@@ -7,20 +7,20 @@
 --  Replaces chat_gui.lua from 0.9.0.
 --
 --  Changes vs 0.9.0 chat_gui:
---    - WorldEdit mode buttons replaced by: Config | IDE | Addons
---    - Addons sub-formspec (llm_connect:main_addons) lists all registered
---      addons and lets the player toggle them per-session
---    - Agent mode: "send" dispatches through agent.lua when an addon is active
+--    - WorldEdit mode buttons replaced by: Config | IDE | Skills
+--    - Skills sub-formspec (llm_connect:main_addons) lists all registered
+--      skills/addons and lets the player toggle them per-session
+--    - command_agent acts as the explicit agent-mode gate
 --    - basic_context replaces chat_context.lua (1.0 context provider)
 --    - All references to we_agency, material_picker removed
 --
 --  Formspec names used:
 --    llm_connect:main         — main chat window
---    llm_connect:main_addons  — addon panel (sub-formspec, same session)
+--    llm_connect:main_addons  — skills panel (sub-formspec, same session)
 --
 --  PUBLIC API:
 --    M.show(player_name)
---    M.show_addons(player_name)
+--    M.show_skills(player_name)
 --    M.handle_fields(player_name, formname, fields) → bool
 --
 -- ===========================================================================
@@ -100,8 +100,7 @@ local function get_session(name)
             history         = {},   -- chat message history [{role, content, status_line?}]
             last_input      = "",   -- preserved across show() calls
             iter_preference = nil,  -- nil = use server default
-            agent_active    = false, -- explicit opt-in toggle, default off
-            chat_scroll     = 0,    -- 0 = top, 1000 = bottom
+                        chat_scroll     = 0,    -- 0 = top, 1000 = bottom
         }
     end
     return sessions[name]
@@ -291,30 +290,8 @@ function M.show(name)
         table.insert(fs, "tooltip[open_config;Open LLM configuration (llm_root only)]")
     end
 
-    -- ── Header row 2: Mode toggle | IDE | Addons | [iter stepper] ──
+    -- ── Header row 2: IDE | Skills | [iter stepper] ──
     local bx = PAD
-
-    -- Agent mode toggle (visible to anyone with llm_agent priv)
-    if can_agent(name) then
-        local active  = session.agent_active
-        local agent   = get_agent()
-        local running = agent and agent.is_running(name)
-        if running then
-            -- locked while agent is executing
-            table.insert(fs, "style[toggle_agent;bgcolor=#2a1a00;textcolor=#ffaa44]")
-            table.insert(fs, "button[" .. bx .. ",0.95;3.2,0.65;toggle_agent;⚙ Agent: RUN…]")
-            table.insert(fs, "tooltip[toggle_agent;Agent is currently running — stop it first to switch modes]")
-        elseif active then
-            table.insert(fs, "style[toggle_agent;bgcolor=#1a3a1a;textcolor=#aaffaa]")
-            table.insert(fs, "button[" .. bx .. ",0.95;3.2,0.65;toggle_agent;⚙ Agent: ON]")
-            table.insert(fs, "tooltip[toggle_agent;Agent ON — LLM executes tools. Click to switch to plain chat.]")
-        else
-            table.insert(fs, "style[toggle_agent;bgcolor=#1a1a1a;textcolor=#666666]")
-            table.insert(fs, "button[" .. bx .. ",0.95;3.2,0.65;toggle_agent;⚙ Agent: OFF]")
-            table.insert(fs, "tooltip[toggle_agent;Agent OFF — plain chat mode. Click to enable tool execution.]")
-        end
-        bx = bx + 3.2 + 0.15
-    end
 
     if can_ide(name) then
         table.insert(fs, "style[open_ide;bgcolor=#1a1a2a;textcolor=#aaaaff]")
@@ -334,14 +311,14 @@ function M.show(name)
                 if s.effective then active_count = active_count + 1 end
             end
         end
-        local addon_label = "⬡ Addons"
+        local addon_label = "⬡ Skills"
         if addon_count > 0 then
-            addon_label = "⬡ Addons (" .. active_count .. "/" .. addon_count .. ")"
+            addon_label = "⬡ Skills (" .. active_count .. "/" .. addon_count .. ")"
         end
         local addon_color = active_count > 0 and "#1a2a1a" or "#252525"
         table.insert(fs, "style[open_addons;bgcolor=" .. addon_color .. ";textcolor=#aaffaa]")
         table.insert(fs, "button[" .. bx .. ",0.95;3.6,0.65;open_addons;" .. addon_label .. "]")
-        table.insert(fs, "tooltip[open_addons;Manage addons available to the agent]")
+        table.insert(fs, "tooltip[open_addons;Manage skills available to the agent. Enable Command Agent to switch Send into agent mode.]")
         bx = bx + 3.6 + 0.15
 
         -- ── Iteration stepper (right-aligned in row 2) ───────
@@ -412,19 +389,19 @@ function M.show(name)
 end
 
 -- ===========================================================================
--- M.show_addons — addon panel sub-formspec
+-- M.show_skills — skills panel sub-formspec
 --
 -- Layout modelled after the sound tab of ide_asset_picker:
---   - Two-column list of registered addons
+--   - Two-column list of registered skills
 --   - Each row: toggle button (green=active / grey=off) + label + tool count
 --   - Availability and privilege indicated inline
 --   - Reset + Close buttons at bottom
 -- ===========================================================================
 
-function M.show_addons(name)
+function M.show_skills(name)
     local registry = get_registry()
     if not registry then
-        core.chat_send_player(name, "[LLM] Addon registry not available")
+        core.chat_send_player(name, "[LLM] Skill registry not available")
         return
     end
 
@@ -462,7 +439,7 @@ function M.show_addons(name)
 
     -- ── Header ───────────────────────────────────────────────
     table.insert(fs, string.format("box[0,0;%.2f,%.2f;#0d1a1a]", W, HDR_H))
-    table.insert(fs, string.format("label[%.2f,0.35;Addons — %s   (%d/%d active)]",
+    table.insert(fs, string.format("label[%.2f,0.35;Skills — %s   (%d/%d active)]",
         PAD, core.formspec_escape(name), effective_n, total_n))
     table.insert(fs, "style[addons_close;bgcolor=#3a1a1a;textcolor=#ffaaaa]")
     table.insert(fs, string.format("button[%.2f,0.12;2.0,0.65;addons_close;✕ Close]",
@@ -471,13 +448,13 @@ function M.show_addons(name)
     local y = HDR_H + PAD
 
     -- ── Info row ─────────────────────────────────────────────
-    table.insert(fs, string.format("label[%.2f,%.2f;Toggle addons for this session. Greyed = unavailable or missing privilege.]",
+    table.insert(fs, string.format("label[%.2f,%.2f;Toggle skills for this session. Greyed = unavailable or missing privilege. Enable Command Agent for tool-executing send mode.]",
         PAD, y + 0.05))
     y = y + INFO_H
 
     -- ── Addon card grid ───────────────────────────────────────
     if total_n == 0 then
-        table.insert(fs, string.format("label[%.2f,%.2f;No addons registered yet.]",
+        table.insert(fs, string.format("label[%.2f,%.2f;No skills registered yet.]",
             PAD, y + 0.3))
     else
         for i, s in ipairs(status_list) do
@@ -524,7 +501,7 @@ function M.show_addons(name)
                 tx + 0.1, ty + (ROW_H - 0.6) / 2, toggle_w, 0.6,
                 btn_name, toggle_lbl))
 
-            -- Label block: addon name + short description
+            -- Label block: skill name + short description
             local lx = tx + 0.1 + toggle_w + 0.15
             local lw = col_w - 0.1 - toggle_w - 0.15 - 0.1
 
@@ -598,6 +575,19 @@ local function update_last_assistant_card(session, body, status_line)
     end
 end
 
+local function should_stick_to_bottom(session)
+    if not session then return false end
+    local history_n = #(session.history or {})
+    local scroll = tonumber(session.chat_scroll) or 0
+    return history_n <= 2 or scroll >= 900
+end
+
+local function maybe_scroll_to_bottom(session)
+    if should_stick_to_bottom(session) then
+        session.chat_scroll = 1000
+    end
+end
+
 local function compact_status_line(iter, max_iter, plan, results)
     local ok_count, fail_count = 0, 0
     for _, r in ipairs(results or {}) do
@@ -632,9 +622,17 @@ local function do_send(name, input, session)
     local agent    = get_agent()
     local registry = get_registry()
 
-    -- Agent mode is opt-in: player must have llm_agent priv AND have
-    -- explicitly toggled the agent on in the GUI (session.agent_active).
-    local use_agent = can_agent(name) and agent ~= nil and session.agent_active
+    -- Agent mode is now gated by the Command Agent skill. If that skill is
+    -- not effectively active for this player/session, Send stays plain chat.
+    local use_agent = false
+    if can_agent(name) and agent ~= nil and registry and registry.get_status then
+        for _, s in ipairs(registry.get_status(name) or {}) do
+            if s.id == "command_agent" and s.effective then
+                use_agent = true
+                break
+            end
+        end
+    end
 
     if use_agent then
         table.insert(session.history, { role = "user", content = input })
@@ -643,7 +641,7 @@ local function do_send(name, input, session)
             content = "Agent active…",
             status_line = "Preparing agent…",
         })
-        session.chat_scroll = 1000
+        maybe_scroll_to_bottom(session)
         M.show(name)
 
         local srv_max  = tonumber(core.settings:get("llm_agent_max_iterations")) or 8
@@ -657,7 +655,7 @@ local function do_send(name, input, session)
                     preview = preview:sub(1, 77) .. "..."
                 end
                 update_last_assistant_card(session, "Agent active…", "💭 " .. preview)
-                session.chat_scroll = 1000
+                maybe_scroll_to_bottom(session)
                 M.show(name)
             end,
             on_step = function(iter, plan, results)
@@ -678,18 +676,18 @@ local function do_send(name, input, session)
                     body = first_tool_line
                 end
                 update_last_assistant_card(session, body, compact_status_line(iter, iter_cap, plan, results))
-                session.chat_scroll = 1000
+                maybe_scroll_to_bottom(session)
                 M.show(name)
             end,
             on_done = function(result)
                 local summary = agent.format_results(result)
                 update_last_assistant_card(session, summary, "")
-                session.chat_scroll = 1000
+                maybe_scroll_to_bottom(session)
                 M.show(name)
             end,
             on_error = function(err)
                 update_last_assistant_card(session, "✗ Error: " .. tostring(err), "Agent aborted")
-                session.chat_scroll = 1000
+                maybe_scroll_to_bottom(session)
                 M.show(name)
             end,
         })
@@ -724,7 +722,7 @@ local function do_send(name, input, session)
         end
 
         table.insert(session.history, { role = "assistant", content = "…" })
-        session.chat_scroll = 1000
+        maybe_scroll_to_bottom(session)
         M.show(name)
 
         llm_api.request(messages, function(result)
@@ -739,7 +737,7 @@ local function do_send(name, input, session)
                     break
                 end
             end
-            session.chat_scroll = 1000
+            maybe_scroll_to_bottom(session)
             M.show(name)
         end, { timeout = llm_api.get_timeout("chat") })
     end
@@ -761,14 +759,14 @@ function M.handle_fields(name, formname, fields)
             if addon_id then
                 local current = registry.is_addon_enabled(name, addon_id)
                 registry.set_player_addon(name, addon_id, not current)
-                M.show_addons(name)
+                M.show_skills(name)
                 return true
             end
         end
 
         if fields.addons_reset then
             registry.reset_player_addons(name)
-            M.show_addons(name)
+            M.show_skills(name)
             return true
         end
 
@@ -792,17 +790,8 @@ function M.handle_fields(name, formname, fields)
         end
     end
 
-    -- ── Agent mode toggle ───────────────────────────────────
-    if fields.toggle_agent then
-        local agent = get_agent()
-        local running = agent and agent.is_running(name)
-        if not running then
-            session.agent_active = not session.agent_active
-        end
-        M.show(name); return true
-
     -- ── Iteration stepper buttons ────────────────────────────
-    elseif fields.iter_dec then
+    if fields.iter_dec then
         local srv_max = tonumber(core.settings:get("llm_agent_max_iterations")) or 8
         local cur = session.iter_preference or srv_max
         session.iter_preference = math.max(1, cur - 1)
@@ -829,7 +818,7 @@ function M.handle_fields(name, formname, fields)
 
     elseif fields.open_addons then
         if can_agent(name) then
-            M.show_addons(name)
+            M.show_skills(name)
         end
         return true
 
@@ -842,6 +831,7 @@ function M.handle_fields(name, formname, fields)
     elseif fields.clear then
         session.history    = {}
         session.last_input = ""
+        session.chat_scroll = 0
         M.show(name)
         return true
 

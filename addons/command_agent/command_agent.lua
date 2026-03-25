@@ -1,0 +1,173 @@
+-- ===========================================================================
+--  addons/command_agent/command_agent.lua — LLM Connect 1.0
+--  author: H5N3RG
+--  license: LGPL-3.0-or-later
+--
+--  Baseline agent skill for controlled chatcommand execution.
+--  This addon acts as the explicit on/off gate for agent mode in main_gui:
+--    - enabled  => send dispatches through agent.lua
+--    - disabled => send stays plain chat
+--
+--  It also exposes a very small chatcommand bridge so the agent can inspect
+--  and execute registered chatcommands when the player deliberately enables
+--  this skill for the current session.
+-- ===========================================================================
+
+local core = core
+
+local function available()
+    return true
+end
+
+local function get_player(name)
+    if not name or name == "" then return nil end
+    return core.get_player_by_name(name)
+end
+
+local function normalize_command(raw)
+    raw = tostring(raw or ""):match("^%s*(.-)%s*$")
+    if raw == "" then return nil, "command is empty" end
+    if raw:sub(1, 1) == "/" then raw = raw:sub(2) end
+    local cmd, param = raw:match("^(%S+)%s*(.-)$")
+    if not cmd or cmd == "" then return nil, "missing command name" end
+    return cmd, param or ""
+end
+
+local function list_commands(args, player_name)
+    local player = get_player(player_name)
+    if not player then
+        return { ok = false, message = "player not found" }
+    end
+
+    local only_allowed = args.only_allowed ~= false
+    local cmds = {}
+    for name, def in pairs(core.registered_chatcommands or {}) do
+        local allowed = true
+        if only_allowed and def.privs then
+            allowed = core.check_player_privs(player_name, def.privs)
+        end
+        if allowed then
+            table.insert(cmds, {
+                name = name,
+                description = def.description or "",
+            })
+        end
+    end
+    table.sort(cmds, function(a, b) return a.name < b.name end)
+
+    local preview = {}
+    for i = 1, math.min(#cmds, 24) do
+        preview[#preview + 1] = "/" .. cmds[i].name
+    end
+
+    return {
+        ok = true,
+        message = (#cmds > 0)
+            and ("Available chatcommands: " .. table.concat(preview, ", "))
+            or "No allowed chatcommands found",
+        data = {
+            count = #cmds,
+            commands = cmds,
+        }
+    }
+end
+
+local function run_chatcommand(args, player_name)
+    local player = get_player(player_name)
+    if not player then
+        return { ok = false, message = "player not found" }
+    end
+
+    local cmd, param = normalize_command(args.command)
+    if not cmd then
+        return { ok = false, message = param }
+    end
+
+    local def = (core.registered_chatcommands or {})[cmd]
+    if not def then
+        return { ok = false, message = "unknown chatcommand '/" .. tostring(cmd) .. "'" }
+    end
+
+    if def.privs and not core.check_player_privs(player_name, def.privs) then
+        return { ok = false, message = "missing privileges for '/" .. tostring(cmd) .. "'" }
+    end
+
+    local ok, success, msg = pcall(def.func, player_name, param)
+    if not ok then
+        return { ok = false, message = "chatcommand crashed: " .. tostring(success) }
+    end
+
+    return {
+        ok = success ~= false,
+        message = tostring(msg or ((success == false) and "command failed" or "command executed")),
+        data = {
+            command = cmd,
+            param = param,
+            success = success ~= false,
+        }
+    }
+end
+
+local function get_context(player_name)
+    local player = get_player(player_name)
+    if not player then return "Command Agent: player not found" end
+    local pos = player:get_pos()
+    return table.concat({
+        "Command Agent skill is active.",
+        "Use it for chatcommand-driven actions when appropriate.",
+        string.format("Player position: (%d,%d,%d)", math.floor(pos.x), math.floor(pos.y), math.floor(pos.z)),
+        "Important: Prefer the most specific skill/tool available. Use run_chatcommand only when a direct skill does not already cover the task.",
+    }, "\n")
+end
+
+local function dispatch(tool_name, args, player_name)
+    args = args or {}
+
+    if tool_name == "list_chatcommands" then
+        return list_commands(args, player_name)
+    elseif tool_name == "run_chatcommand" then
+        return run_chatcommand(args, player_name)
+    end
+
+    return { ok = false, message = "unknown tool '" .. tostring(tool_name) .. "'" }
+end
+
+llm_connect.registry.register({
+    id          = "command_agent",
+    label       = "Command Agent",
+    version     = "1.0.0-dev",
+    description = "Baseline skill that enables agent mode and controlled chatcommand execution.",
+    privilege   = "llm_agent",
+    available   = available,
+    tools = {
+        {
+            name = "list_chatcommands",
+            description = "List currently available chatcommands for the player. Use this before guessing a command name.",
+            parameters = {
+                type = "object",
+                properties = {
+                    only_allowed = {
+                        type = "boolean",
+                        description = "If true, only commands allowed for the current player are returned.",
+                    },
+                },
+            },
+        },
+        {
+            name = "run_chatcommand",
+            description = "Run one exact chatcommand string for the current player, for example '/teleport 0,10,0'.",
+            parameters = {
+                type = "object",
+                properties = {
+                    command = {
+                        type = "string",
+                        description = "Full chatcommand string. May start with '/'.",
+                    },
+                },
+                required = { "command" },
+            },
+        },
+    },
+    dispatch    = dispatch,
+    get_context = get_context,
+}, "addons/command_agent/command_agent.lua")
