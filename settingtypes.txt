@@ -104,10 +104,9 @@ llm_ide_hot_reload             (Hot-reload world after successful execution)  bo
 # TODO: not yet implemented — see smart_lua_ide/TODO.txt
 llm_ide_auto_save              (Auto-save code buffer on changes)             bool  true
 
-# Enforce the sandbox security restrictions for llm_dev players.
-# When false, code runs without sandboxing (full Lua access, llm_root only).
-# TODO: not yet implemented — see smart_lua_ide/TODO.txt
-llm_ide_whitelist_enabled      (Enforce sandbox security restrictions)        bool  true
+# Policy anchor for llm_dev sandbox scope.
+# Current runtime behavior keeps llm_dev sandboxed; llm_root stays unrestricted.
+llm_ide_whitelist_enabled      (Scope llm_dev to sandboxed execution)         bool  true
 
 # Live AI suggestions while typing (Copilot-style).
 # Requires debounced globalstep + partial-code LLM call.

@@ -69,6 +69,8 @@ that can manipulate the game world through a pluggable addon system.
 | `llm_agent` | Agent mode and addon tool dispatch |
 | `llm_root` | Full access — implies all above. Config, persistent code. |
 
+Root/dev execution semantics are centralized via `execution_policy.lua`: `llm_root` is unrestricted, while `llm_dev` keeps IDE authority but follows the current sandbox policy.
+
 ---
 
 ## Chat Commands

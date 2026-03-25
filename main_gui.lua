@@ -33,20 +33,43 @@ local M    = {}
 -- llm_root implies llm + llm_dev + llm_agent
 -- ===========================================================================
 
+local function get_policy()
+    return _G.llm_connect and _G.llm_connect.policy
+end
+
 local function raw_priv(name, priv)
+    local policy = get_policy()
+    if policy and policy.raw_priv then return policy.raw_priv(name, priv) end
     local p = core.get_player_privs(name) or {}
     return p[priv] == true
 end
 
 local function has_priv(name, priv)
+    local policy = get_policy()
+    if policy and policy.has_priv then return policy.has_priv(name, priv) end
     if raw_priv(name, "llm_root") then return true end
     return raw_priv(name, priv)
 end
 
-local function can_chat(name)   return has_priv(name, "llm") end
-local function can_ide(name)    return has_priv(name, "llm_dev") end
-local function can_agent(name)  return has_priv(name, "llm_agent") end
-local function can_config(name) return raw_priv(name, "llm_root") end
+local function can_chat(name)
+    local policy = get_policy()
+    return policy and policy.can_chat and policy.can_chat(name) or has_priv(name, "llm")
+end
+
+local function can_ide(name)
+    local policy = get_policy()
+    return policy and policy.can_ide and policy.can_ide(name) or has_priv(name, "llm_dev")
+end
+
+local function can_agent(name)
+    local policy = get_policy()
+    return policy and policy.can_agent and policy.can_agent(name) or has_priv(name, "llm_agent")
+end
+
+local function can_config(name)
+    local policy = get_policy()
+    return policy and policy.can_config and policy.can_config(name) or raw_priv(name, "llm_root")
+end
 
 -- ===========================================================================
 -- Registry / agent helpers (resolved at call time to avoid circular deps)

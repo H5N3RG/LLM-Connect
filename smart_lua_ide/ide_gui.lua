@@ -202,14 +202,36 @@ core.register_on_leaveplayer(function(player)
     sessions[player:get_player_name()] = nil
 end)
 
+local function get_policy()
+    return _G.llm_connect and _G.llm_connect.policy
+end
+
 local function has_priv(name, priv)
+    local policy = get_policy()
+    if policy and policy.has_priv then return policy.has_priv(name, priv) end
     local p = core.get_player_privs(name) or {}
     return p[priv] == true
 end
 
-local function can_use_ide(name) return has_priv(name, "llm_dev") or has_priv(name, "llm_root") end
-local function can_execute(name) return has_priv(name, "llm_dev") or has_priv(name, "llm_root") end
-local function is_root(name)     return has_priv(name, "llm_root") end
+local function can_use_ide(name)
+    local policy = get_policy()
+    return policy and policy.can_ide and policy.can_ide(name) or has_priv(name, "llm_dev")
+end
+
+local function can_execute(name)
+    local policy = get_policy()
+    return policy and policy.can_ide and policy.can_ide(name) or has_priv(name, "llm_dev")
+end
+
+local function is_root(name)
+    local policy = get_policy()
+    return policy and policy.is_root and policy.is_root(name) or has_priv(name, "llm_root")
+end
+
+local function get_execution_ctx(name)
+    local policy = get_policy()
+    return policy and policy.get_context and policy.get_context(name, is_root(name) and "llm_root" or "llm_dev") or nil
+end
 
 -- ===========================================================================
 -- M.show
@@ -280,7 +302,7 @@ function M.show(name)
     add_btn("syntax",  "Syntax",   "Local syntax check + AI fix if errors found", true)
     add_btn("analyze", "Analyze",  "AI: find logic & API issues", true)
     add_btn("explain", "Explain",  "AI: explain the code in plain language", true)
-    add_btn("run",     "▶ Run",    can_execute(name) and "Execute in sandbox" or "Needs llm_dev", can_execute(name))
+    add_btn("run",     "▶ Run",    can_execute(name) and (((get_execution_ctx(name) or {}).execution_mode == "unrestricted") and "Execute unrestricted (root)" or "Execute in sandbox") or "Needs llm_dev", can_execute(name))
 
     if session.run_failed then
         table.insert(fs, "style[auto_fix;bgcolor=#3a1a00;textcolor=#ffcc44]")
@@ -687,7 +709,12 @@ function M.run_code(name)
     session.run_failed = false
     M.show(name)
 
-    local res      = executor.execute(name, session.code, {sandbox = true, precheck = true})
+    local exec_ctx  = get_execution_ctx(name)
+    local res      = executor.execute(name, session.code, {
+        sandbox  = (exec_ctx and exec_ctx.sandbox_enabled) ~= false,
+        profile  = exec_ctx and exec_ctx.profile or nil,
+        precheck = true,
+    })
     local pre_warn = res.precheck_warnings or ""
 
     if res.success then
@@ -729,8 +756,11 @@ function M.auto_fix(name)
     local original_code = session.code
     local iter_log      = {}
 
+    local exec_ctx = get_execution_ctx(name)
+
     executor.execute_with_retry(name, session.code, {
-        sandbox        = true,
+        sandbox        = (exec_ctx and exec_ctx.sandbox_enabled) ~= false,
+        profile        = exec_ctx and exec_ctx.profile or nil,
         max_iterations = max_iter,
         llm_request    = function(messages, cb)
             llm_api.request(messages, cb, {timeout = llm_api.get_timeout("ide")})

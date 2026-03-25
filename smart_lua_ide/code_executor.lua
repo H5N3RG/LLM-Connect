@@ -29,17 +29,25 @@ local STARTUP_FILE = core.get_worldpath() .. DIR_DELIM .. "llm_startup.lua"
 -- Helpers
 -- ===========================================================================
 
+local function get_policy()
+    return _G.llm_connect and _G.llm_connect.policy
+end
+
 local function player_has_priv(name, priv)
     local privs = core.get_player_privs(name) or {}
     return privs[priv] == true
 end
 
 local function has_llm_priv(name, priv)
+    local policy = get_policy()
+    if policy and policy.has_priv then return policy.has_priv(name, priv) end
     if player_has_priv(name, "llm_root") then return true end
     return player_has_priv(name, priv)
 end
 
 local function is_llm_root(name)
+    local policy = get_policy()
+    if policy and policy.is_root then return policy.is_root(name) end
     return player_has_priv(name, "llm_root")
 end
 
@@ -249,9 +257,14 @@ function M.execute(player_name, code, options)
         return result
     end
 
-    local is_root     = is_llm_root(player_name)
-    local use_sandbox = options.sandbox ~= false
-    local allow_persist = options.allow_persist or is_root
+    local policy = get_policy()
+    local exec_ctx = policy and policy.resolve_ide_execution and policy.resolve_ide_execution(player_name, options) or nil
+
+    local is_root       = is_llm_root(player_name)
+    local use_sandbox   = exec_ctx and exec_ctx.sandbox or (options.sandbox ~= false)
+    local allow_persist = (options.allow_persist ~= nil) and options.allow_persist
+        or (exec_ctx and exec_ctx.can_persist)
+        or is_root
 
     if not has_llm_priv(player_name, "llm_dev") then
         result.error = "Missing privilege: llm_dev (or llm_root)"

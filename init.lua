@@ -11,7 +11,8 @@
 --    5. registry.lua         — Addon-Gateway, _G.llm_connect setzen
 --       └ registry.expose_global()     → _G.llm_connect.registry bereit
 --       └ registry.load_internal()     → addons/ scannen (außer smart_lua_ide)
---    6. agent.lua            — Agent-Orchestrator
+--    6. execution_policy.lua — zentrale Root/Dev/Execution-Policy
+--    7. agent.lua            — Agent-Orchestrator
 --    7. addons/smart_lua_ide/ — First-Class Sub-System, direkt geladen
 --       └ code_executor.lua
 --       └ ide_asset_picker.lua
@@ -125,7 +126,14 @@ registry.expose_global()
 registry.load_internal()
 
 -- ===========================================================================
--- 6. Agent orchestrator
+-- 6. Execution policy
+-- ===========================================================================
+
+local execution_policy = load_module(mod_dir .. "/execution_policy.lua", "execution_policy", true)
+_G.llm_connect.policy = execution_policy
+
+-- ===========================================================================
+-- 7. Agent orchestrator
 -- ===========================================================================
 
 local agent = load_module(mod_dir .. "/agent.lua", "agent", true)
@@ -134,7 +142,7 @@ local agent = load_module(mod_dir .. "/agent.lua", "agent", true)
 _G.llm_connect.agent = agent
 
 -- ===========================================================================
--- 7. Smart Lua IDE — first-class sub-system
+-- 8. Smart Lua IDE — first-class sub-system
 --    Loaded directly by init.lua, NOT through the registry.
 --    Load order within the IDE matters:
 --      code_executor → ide_asset_picker → ide_gui (ide_gui depends on both)
