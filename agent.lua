@@ -67,15 +67,29 @@ local function get_state(name)
     return agent_state[name]
 end
 
-local function reset_state(name, goal)
+local function resolve_max_iterations(options)
+    local srv_max = tonumber(core.settings:get("llm_agent_max_iterations")) or 8
+    local req = options and tonumber(options.max_iterations)
+    if req then
+        req = math.floor(req)
+        if req >= 1 then
+            return math.min(req, srv_max)
+        end
+    end
+    return srv_max
+end
+
+local function reset_state(name, goal, options)
+    local resolved_max = resolve_max_iterations(options)
     agent_state[name] = {
-        running   = true,
-        cancelled = false,
-        iteration = 0,
-        goal      = goal,
-        history   = {},
-        snapshots = {},
-        options   = options,   -- stored so do_iteration can read max_iterations
+        running        = true,
+        cancelled      = false,
+        iteration      = 0,
+        max_iterations = resolved_max,
+        goal           = goal,
+        history        = {},
+        snapshots      = {},
+        options        = options or {},
     }
     return agent_state[name]
 end
@@ -118,18 +132,14 @@ end
 -- Settings helpers
 -- ===========================================================================
 
--- Returns the effective max iterations for a run.
--- options.max_iterations (player preference) is respected if within 1..server_max.
--- The server setting is always the ceiling.
-local function cfg_max_iterations(options)
-    local srv_max = tonumber(core.settings:get("llm_agent_max_iterations")) or 8
-    if options and options.max_iterations then
-        local req = tonumber(options.max_iterations)
-        if req and req >= 1 and req <= srv_max then
-            return req
-        end
-    end
-    return srv_max
+-- Returns the server-side ceiling for iterations.
+local function cfg_max_iterations()
+    return tonumber(core.settings:get("llm_agent_max_iterations")) or 8
+end
+
+local function reached_iteration_limit(state)
+    local limit = tonumber(state and state.max_iterations) or cfg_max_iterations()
+    return (tonumber(state and state.iteration) or 0) >= limit, limit
 end
 
 local function cfg_timeout()
@@ -566,13 +576,14 @@ local function do_iteration(state, player_name, manifest_text, addon_filter, cal
         end
 
         -- Max iterations check
-        if iteration >= cfg_max_iterations(state.options) then
+        local reached_limit, limit = reached_iteration_limit(state)
+        if reached_limit then
             state.running = false
             if callbacks.on_done then
                 pcall(callbacks.on_done, {
                     ok       = true,
                     finished = false,
-                    reason   = "reached max iterations (" .. cfg_max_iterations(state.options) .. ")",
+                    reason   = "reached max iterations (" .. limit .. ")",
                     steps    = state.history,
                 })
             end
@@ -664,23 +675,22 @@ function M.run(player_name, goal, options, callbacks)
     end
 
     -- Initialise state
-    local state = reset_state(player_name, goal)
+    local state = reset_state(player_name, goal, options)
 
-    core.log("action", string.format("[agent] run() started for %s | goal: %s | tools: %d",
-        player_name, goal:sub(1, 60), #manifest))
+    core.log("action", string.format(
+        "[agent] run() started for %s | goal: %s | tools: %d | max_iterations: %d",
+        player_name, goal:sub(1, 60), #manifest, state.max_iterations))
 
     -- Take snapshot before any execution
     take_snapshot(state, player_name)
 
-    -- Single-shot mode: cap at 1 iteration
-    if options.mode == "single" then
-        local orig_max = cfg_max_iterations
-        cfg_max_iterations = function() return 1 end
-        do_iteration(state, player_name, manifest_text, options.addon_filter, callbacks)
-        cfg_max_iterations = orig_max
-    else
-        do_iteration(state, player_name, manifest_text, options.addon_filter, callbacks)
+    -- Single-shot mode: cap at 1 iteration directly in state/options.
+    if options.mode == "single" and state.max_iterations > 1 then
+        state.max_iterations = 1
+        state.options.max_iterations = 1
     end
+
+    do_iteration(state, player_name, manifest_text, options.addon_filter, callbacks)
 end
 
 -- ===========================================================================
