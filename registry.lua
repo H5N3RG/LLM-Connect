@@ -458,12 +458,11 @@ function M.set_player_addon(player_name, addon_id, enabled)
 
     local ps = get_player_state(player_name)
 
-    -- Lazy-Init aus globalen Defaults damit andere Addons ihren Status behalten
+    -- Lazy-Init aus effektivem Status damit nichts beim ersten Klick mitspringt
     if ps.enabled_addons == nil then
         ps.enabled_addons = {}
-        local global = global_enabled_set()
         for id in pairs(M.addons) do
-            ps.enabled_addons[id] = (global == nil) or (global[id] == true)
+            ps.enabled_addons[id] = M.is_addon_enabled(player_name, id)
         end
     end
 

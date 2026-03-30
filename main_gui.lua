@@ -414,7 +414,7 @@ function M.show_skills(name)
     local PAD     = 0.25
     local HDR_H   = 0.9
     local INFO_H  = 0.45
-    local ROW_H   = 1.1      -- taller rows: room for label + description
+    local ROW_H   = 1.38     -- taller rows: room for label + description + meta
     local ROW_PAD = 0.12
     local ROW_STEP = ROW_H + ROW_PAD
     local BTN_H   = 0.75
@@ -501,40 +501,36 @@ function M.show_skills(name)
                 tx + 0.1, ty + (ROW_H - 0.6) / 2, toggle_w, 0.6,
                 btn_name, toggle_lbl))
 
-            -- Label block: skill name + short description
+            -- Label block: skill name + short description + meta info
             local lx = tx + 0.1 + toggle_w + 0.15
-            local lw = col_w - 0.1 - toggle_w - 0.15 - 0.1
 
             -- Name line
             local name_color = (not s.available or not s.has_priv) and "#666666" or "#e0e0e0"
             table.insert(fs, string.format("label[%.2f,%.2f;%s]",
-                lx, ty + 0.22,
+                lx, ty + 0.18,
                 core.colorize(name_color, core.formspec_escape(s.label))))
 
             -- Description line (truncated)
             local desc = s.description or ""
-            if #desc > 48 then desc = desc:sub(1, 45) .. "…" end
+            if #desc > 42 then desc = desc:sub(1, 39) .. "…" end
             table.insert(fs, string.format("label[%.2f,%.2f;%s]",
-                lx, ty + 0.62,
+                lx, ty + 0.54,
                 core.colorize("#888888", core.formspec_escape(desc))))
 
-            -- Right-side badges: version + tool count + origin
-            local origin_color = s.origin == "extern" and "#4a8844" or "#444488"
-            local badges = core.colorize("#666666", "v" .. s.version)
-                .. "  " .. core.colorize("#555566", s.tool_count .. " tools")
-                .. "  " .. core.colorize(origin_color,
-                    "[" .. (s.origin == "extern" and "ext" or "int") .. "]")
-            -- warning badges
+            -- Inline meta row lives inside the card instead of floating outside it
+            local origin_tag = (s.origin == "extern" and "ext" or "int")
+            local meta = core.colorize("#6f6f6f", "v" .. tostring(s.version or "?"))
+                .. "  " .. core.colorize("#666688", tostring(s.tool_count or 0) .. " tools")
+                .. "  " .. core.colorize(s.origin == "extern" and "#4a8844" or "#444488", "[" .. origin_tag .. "]")
             if not s.available then
-                badges = badges .. "  " .. core.colorize("#aa4422", "⚠ dep")
+                meta = meta .. "  " .. core.colorize("#aa4422", "dep")
             end
             if not s.has_priv then
-                badges = badges .. "  " .. core.colorize("#aa6622", "⚠ priv")
+                meta = meta .. "  " .. core.colorize("#aa6622", "priv")
             end
-            -- Badges go on the right edge of the card
             table.insert(fs, string.format("label[%.2f,%.2f;%s]",
-                tx + col_w - 0.08, ty + 0.22,
-                badges))
+                lx, ty + 0.90,
+                meta))
 
             -- Full tooltip
             table.insert(fs, "tooltip[" .. btn_name .. ";"
@@ -577,9 +573,8 @@ end
 
 local function should_stick_to_bottom(session)
     if not session then return false end
-    local history_n = #(session.history or {})
     local scroll = tonumber(session.chat_scroll) or 0
-    return history_n <= 2 or scroll >= 900
+    return scroll >= 900
 end
 
 local function maybe_scroll_to_bottom(session)
