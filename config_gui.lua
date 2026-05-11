@@ -277,7 +277,7 @@ local function build_tab_agent(fs)
     y = sep(fs, y, "Security")
 
     -- Command whitelist
-    table.insert(fs, string.format("label[%.2f,%.2f;Command whitelist for run_chat_command (empty = all allowed):]", PAD, y))
+    table.insert(fs, string.format("label[%.2f,%.2f;Deprecated legacy command whitelist (JSON run_chat_command removed):]", PAD, y))
     y = y + 0.45
     local whitelist = core.settings:get("llm_agent_command_whitelist") or ""
     table.insert(fs, string.format(
@@ -288,15 +288,15 @@ local function build_tab_agent(fs)
     table.insert(fs, "tooltip[agent_cmd_whitelist;Comma-separated command names the agent may call. Example: teleport,give,time\nLeave empty to allow any command the player is already privileged to run.\nRecommended: restrict on public servers.]")
     y = y + FIELD_H + PAD
 
-    y = sep(fs, y, "Addon defaults")
+    y = sep(fs, y, "Legacy addon defaults (deprecated)")
 
     local addons_default_on = core.settings:get_bool("llm_agent_addons_default_on", false)
     table.insert(fs, string.format(
-        "checkbox[%.2f,%.2f;agent_addons_default_on;Addons active by default (players can still override per-session);%s]",
+        "checkbox[%.2f,%.2f;agent_addons_default_on;Legacy addons active by default (deprecated);%s]",
         PAD, y, addons_default_on and "true" or "false"))
     table.insert(fs, "tooltip[agent_addons_default_on;When off (default), players must explicitly enable addons in the Addons panel. When on, all addons are active unless the player disables them.]")
     y = y + CB_H + PAD * 0.5
-    table.insert(fs, string.format("label[%.2f,%.2f;Addon IDs enabled by default (empty = all):]", PAD, y))
+    table.insert(fs, string.format("label[%.2f,%.2f;Legacy addon IDs enabled by default (deprecated):]", PAD, y))
     y = y + 0.45
     local addons_enabled = core.settings:get("llm_agent_addons_enabled") or ""
     table.insert(fs, string.format(
@@ -311,12 +311,12 @@ local function build_tab_agent(fs)
     local registry = _G.llm_connect and _G.llm_connect.registry
     local addon_count = 0
     if registry then
-        for _ in pairs(registry.addons) do addon_count = addon_count + 1 end
+        for _ in pairs(registry.skills or {}) do addon_count = addon_count + 1 end
     end
     local agent_obj = _G.llm_connect and _G.llm_connect.agent
     local status_color = agent_enabled and "#0d1a0d" or "#1a1010"
     local status_lines = {
-        "Registered addons: " .. addon_count,
+        "Registered Lua skills: " .. addon_count,
         "Agent module: " .. (agent_obj and "loaded" or "NOT LOADED"),
         "llm_agent_enabled: " .. tostring(agent_enabled),
     }

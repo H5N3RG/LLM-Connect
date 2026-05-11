@@ -10,7 +10,7 @@
 --    - WorldEdit mode buttons replaced by: Config | IDE | Skills
 --    - Skills sub-formspec (llm_connect:main_addons) lists all registered
 --      skills/addons and lets the player toggle them per-session
---    - command_agent acts as the explicit agent-mode gate
+--    - v1.1.0-dev: llm_agent privilege gates Lua-first agent mode
 --    - basic_context replaces chat_context.lua (1.0 context provider)
 --    - All references to we_agency, material_picker removed
 --
@@ -318,7 +318,7 @@ function M.show(name)
         local addon_color = active_count > 0 and "#1a2a1a" or "#252525"
         table.insert(fs, "style[open_addons;bgcolor=" .. addon_color .. ";textcolor=#aaffaa]")
         table.insert(fs, "button[" .. bx .. ",0.95;3.6,0.65;open_addons;" .. addon_label .. "]")
-        table.insert(fs, "tooltip[open_addons;Manage skills available to the agent. Enable Command Agent to switch Send into agent mode.]")
+        table.insert(fs, "tooltip[open_addons;Manage Lua-first skills. Send uses action-aware mode only when at least one skill is active.]")
         bx = bx + 3.6 + 0.15
 
         -- ── Iteration stepper (right-aligned in row 2) ───────
@@ -399,6 +399,11 @@ end
 -- ===========================================================================
 
 function M.show_skills(name)
+    if not can_agent(name) then
+        core.chat_send_player(name, "[LLM] Missing privilege: llm_agent (or llm_root)")
+        return
+    end
+
     local registry = get_registry()
     if not registry then
         core.chat_send_player(name, "[LLM] Skill registry not available")
@@ -448,7 +453,7 @@ function M.show_skills(name)
     local y = HDR_H + PAD
 
     -- ── Info row ─────────────────────────────────────────────
-    table.insert(fs, string.format("label[%.2f,%.2f;Toggle skills for this session. Greyed = unavailable or missing privilege. Enable Command Agent for tool-executing send mode.]",
+    table.insert(fs, string.format("label[%.2f,%.2f;Toggle Lua-first skills for this session. Greyed = unavailable or missing privilege. JSON addons are deprecated.]",
         PAD, y + 0.05))
     y = y + INFO_H
 
@@ -462,6 +467,14 @@ function M.show_skills(name)
             local row_idx = (i - 1) % rows_per_col
             local tx = PAD + col_idx * (col_w + col_gap)
             local ty = y   + row_idx * ROW_STEP
+
+            -- Normalize potentially partial skill status records defensively.
+            local sid = tostring(s.id or ("skill_" .. tostring(i)))
+            local slabel = tostring(s.label or s.name or sid)
+            local sdesc = tostring(s.description or "")
+            local sversion = tostring(s.version or "?")
+            local sorigin = tostring(s.origin or "internal")
+            local stool_count = tonumber(s.tool_count) or 0
 
             -- Card background — colour-coded by state
             local card_bg
@@ -483,7 +496,7 @@ function M.show_skills(name)
                 tx, ty, ROW_H, bar_color))
 
             -- Toggle button
-            local btn_name  = "addon_toggle_" .. s.id
+            local btn_name  = "addon_toggle_" .. sid
             local toggle_w  = 1.1
             local btn_off   = not s.available or not s.has_priv
             local toggle_bg = btn_off    and "#252525"
@@ -508,20 +521,20 @@ function M.show_skills(name)
             local name_color = (not s.available or not s.has_priv) and "#666666" or "#e0e0e0"
             table.insert(fs, string.format("label[%.2f,%.2f;%s]",
                 lx, ty + 0.18,
-                core.colorize(name_color, core.formspec_escape(s.label))))
+                core.colorize(name_color, core.formspec_escape(slabel))))
 
             -- Description line (truncated)
-            local desc = s.description or ""
+            local desc = sdesc
             if #desc > 42 then desc = desc:sub(1, 39) .. "…" end
             table.insert(fs, string.format("label[%.2f,%.2f;%s]",
                 lx, ty + 0.54,
                 core.colorize("#888888", core.formspec_escape(desc))))
 
             -- Inline meta row lives inside the card instead of floating outside it
-            local origin_tag = (s.origin == "extern" and "ext" or "int")
-            local meta = core.colorize("#6f6f6f", "v" .. tostring(s.version or "?"))
-                .. "  " .. core.colorize("#666688", tostring(s.tool_count or 0) .. " tools")
-                .. "  " .. core.colorize(s.origin == "extern" and "#4a8844" or "#444488", "[" .. origin_tag .. "]")
+            local origin_tag = (sorigin == "extern" and "ext" or "int")
+            local meta = core.colorize("#6f6f6f", "v" .. sversion)
+                .. "  " .. core.colorize("#666688", tostring(stool_count) .. " tools")
+                .. "  " .. core.colorize(sorigin == "extern" and "#4a8844" or "#444488", "[" .. origin_tag .. "]")
             if not s.available then
                 meta = meta .. "  " .. core.colorize("#aa4422", "dep")
             end
@@ -617,24 +630,23 @@ local function do_send(name, input, session)
     local agent    = get_agent()
     local registry = get_registry()
 
-    -- Agent mode is now gated by the Command Agent skill. If that skill is
-    -- not effectively active for this player/session, Send stays plain chat.
-    local use_agent = false
-    if can_agent(name) and agent ~= nil and registry and registry.get_status then
-        for _, s in ipairs(registry.get_status(name) or {}) do
-            if s.id == "command_agent" and s.effective then
-                use_agent = true
-                break
-            end
+    -- v1.1.0-dev dual-channel: use agent only when at least one skill is active.
+    -- Otherwise the same Send button is plain chat. Loaded skills are OFF by default.
+    local active_skill_count = 0
+    if registry and registry.get_status then
+        local status = registry.get_status(name)
+        for _, s in ipairs(status or {}) do
+            if s.effective then active_skill_count = active_skill_count + 1 end
         end
     end
+    local use_agent = can_agent(name) and agent ~= nil and active_skill_count > 0
 
     if use_agent then
         table.insert(session.history, { role = "user", content = input })
         table.insert(session.history, {
             role = "assistant",
-            content = "Agent active…",
-            status_line = "Preparing agent…",
+            content = "…",
+            status_line = "Preparing action-aware chat…",
         })
         maybe_scroll_to_bottom(session)
         M.show(name)
@@ -649,12 +661,12 @@ local function do_send(name, input, session)
                 if #preview > 80 then
                     preview = preview:sub(1, 77) .. "..."
                 end
-                update_last_assistant_card(session, "Agent active…", "💭 " .. preview)
+                update_last_assistant_card(session, nil, "💭 " .. preview)
                 maybe_scroll_to_bottom(session)
                 M.show(name)
             end,
             on_step = function(iter, plan, results)
-                local body = "Agent active…"
+                local body = nil
                 local first_tool_line
                 for _, r in ipairs(results or {}) do
                     if r.tool ~= "*" then
@@ -743,8 +755,15 @@ end
 -- ===========================================================================
 
 function M.handle_fields(name, formname, fields)
-    -- ── Addon panel ──────────────────────────────────────────
+    if not can_chat(name) then return true end
+
+    -- ── Skill panel ───────────────────────────────────────────
     if formname:match("^llm_connect:main_addons") then
+        if not can_agent(name) then
+            core.chat_send_player(name, "[LLM] Missing privilege: llm_agent (or llm_root)")
+            return true
+        end
+
         local registry = get_registry()
         if not registry then return false end
 
@@ -786,13 +805,13 @@ function M.handle_fields(name, formname, fields)
     end
 
     -- ── Iteration stepper buttons ────────────────────────────
-    if fields.iter_dec then
+    if fields.iter_dec and can_agent(name) then
         local srv_max = tonumber(core.settings:get("llm_agent_max_iterations")) or 8
         local cur = session.iter_preference or srv_max
         session.iter_preference = math.max(1, cur - 1)
         M.show(name); return true
 
-    elseif fields.iter_inc then
+    elseif fields.iter_inc and can_agent(name) then
         local srv_max = tonumber(core.settings:get("llm_agent_max_iterations")) or 8
         local cur = session.iter_preference or srv_max
         session.iter_preference = math.min(srv_max, cur + 1)
@@ -817,7 +836,7 @@ function M.handle_fields(name, formname, fields)
         end
         return true
 
-    elseif fields.agent_cancel then
+    elseif fields.agent_cancel and can_agent(name) then
         local agent = get_agent()
         if agent then agent.cancel(name) end
         M.show(name)

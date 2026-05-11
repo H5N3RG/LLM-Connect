@@ -1,7 +1,7 @@
 # ===========================================================================
 # LLM Connect — Luanti Mod Settings
 # ===========================================================================
-# Version: 1.0.0-dev
+# Version: 1.1.0-dev
 # ===========================================================================
 
 
@@ -71,33 +71,18 @@ llm_agent_enabled        (Enable agent mode globally)                 bool   tru
 # reaches this limit.
 llm_agent_max_iterations (Max agent loop iterations)                  int    8      1     32
 
-# Take a world snapshot before each agent run to support undo.
-# Requires at least one loaded addon to implement snapshot_hook.
-llm_agent_snapshot       (Snapshot world state before agent run)      bool   true
-
-# Comma-separated list of chat commands the agent may execute via the
-# built-in run_chat_command tool. Empty = all commands the player can run.
-# Example: //set,//replace,//stack
-llm_agent_command_whitelist (Agent command whitelist, empty=all)      string
-
-# Comma-separated list of addon IDs that are active by default.
-# Empty = all registered addons are active by default.
-# Per-player overrides set in-game via the Addons panel always take precedence.
-llm_agent_addons_enabled (Addon IDs enabled by default, empty=all)   string
-
-# Whether addons are active by default when no explicit list is set above
-# and no per-player override exists.
-# false (default) = player must explicitly enable addons in the Addons panel.
-# true = all registered addons are active unless explicitly disabled.
-llm_agent_addons_default_on (Addons active by default)               bool   false
+# Reserved for the future rollback layer. v1.1.0-dev currently routes all
+# execution through core_executor.lua; legacy addon snapshot hooks were removed.
+llm_agent_snapshot       (Reserve snapshot support before agent run) bool   true
 
 
 # === Smart Lua IDE ===
 
-# Hot-reload the world after a successful sandboxed execution.
-# Triggers a /reload equivalent so new nodes/items appear without full restart.
-# TODO: not yet implemented — see smart_lua_ide/TODO.txt
-llm_ide_hot_reload             (Hot-reload world after successful execution)  bool  true
+# Enables the IDE Hot Reload button for root users.
+# v1 hot reload saves through the active IDE storage backend, then executes only
+# runtime-safe llm_scripts. Startup-preferred registrations are saved but not
+# live-reloaded; restart remains the supported activation path.
+llm_ide_hot_reload             (Enable IDE hot-reload button)                 bool  true
 
 # Auto-save the code buffer to a temp file whenever it changes.
 # Prevents work loss on crash or accidental IDE close.
@@ -107,6 +92,11 @@ llm_ide_auto_save              (Auto-save code buffer on changes)             bo
 # Policy anchor for llm_dev sandbox scope.
 # Current runtime behavior keeps llm_dev sandboxed; llm_root stays unrestricted.
 llm_ide_whitelist_enabled      (Scope llm_dev to sandboxed execution)         bool  true
+
+# Enables the root-only Trusted Worldmod persistence backend switch in the IDE.
+# Requires llm_connect in secure.trusted_mods when mod security is enabled.
+# v1 supports Save + Validate semantics only; standalone worldmod hot reload is disabled.
+llm_ide_trusted_worldmod_backend (Enable Trusted Worldmod backend switch)      bool  true
 
 # Live AI suggestions while typing (Copilot-style).
 # Requires debounced globalstep + partial-code LLM call.
@@ -158,10 +148,6 @@ llm_ide_asset_max_selected     (Max assets selectable in IDE picker)    int   32
 #     "en" injects no instruction and saves tokens. For non-English output,
 #     set to the desired language code; increase llm_language_instruction_repeat
 #     if the model ignores the instruction.
-#
-#   llm_agent_command_whitelist:
-#     Leave empty to allow all commands the player already has privilege for.
-#     Restrict to specific commands on public servers.
 #
 #   llm_ide_api_default_level:
 #     "full" should only be used for complex generation tasks — it adds

@@ -132,42 +132,27 @@ local function dispatch(tool_name, args, player_name)
     return { ok = false, message = "unknown tool '" .. tostring(tool_name) .. "'" }
 end
 
-llm_connect.registry.register({
-    id          = "command_agent",
-    label       = "Command Agent",
-    version     = "1.0.0-dev",
-    description = "Baseline skill that enables agent mode and controlled chatcommand execution.",
-    privilege   = "llm_agent",
-    available   = available,
-    tools = {
-        {
-            name = "list_chatcommands",
-            description = "List currently available chatcommands for the player. Use this before guessing a command name.",
-            parameters = {
-                type = "object",
-                properties = {
-                    only_allowed = {
-                        type = "boolean",
-                        description = "If true, only commands allowed for the current player are returned.",
-                    },
-                },
-            },
-        },
-        {
-            name = "run_chatcommand",
-            description = "Run one exact chatcommand string for the current player, for example '/teleport 0,10,0'.",
-            parameters = {
-                type = "object",
-                properties = {
-                    command = {
-                        type = "string",
-                        description = "Full chatcommand string. May start with '/'.",
-                    },
-                },
-                required = { "command" },
-            },
-        },
+local root = rawget(_G, "llm_connect") or {}
+rawset(_G, "llm_connect", root)
+root.skills = root.skills or {}
+root.skills.command_agent = {
+    list_chatcommands = function(args, player_name) return list_commands(args or {}, player_name) end,
+    run_chatcommand = function(args, player_name) return run_chatcommand(args or {}, player_name) end,
+}
+
+root.registry.register_skill({
+    id = "command_agent",
+    label = "Command Agent",
+    version = "1.1.0-dev",
+    description = "Lua-first skill for controlled chatcommand discovery and execution.",
+    required_priv = "llm_agent",
+    default_enabled = false,
+    api = {
+        "llm_connect.skills.command_agent.list_chatcommands({ only_allowed = true }, player_name)",
+        "llm_connect.skills.command_agent.run_chatcommand({ command = '/time 6000' }, player_name)",
     },
-    dispatch    = dispatch,
     get_context = get_context,
-}, "addons/command_agent/command_agent.lua")
+    tool_count = 2,
+})
+
+core.log("action", "[command_agent] loaded as Lua-first skill")

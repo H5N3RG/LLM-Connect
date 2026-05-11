@@ -181,6 +181,14 @@ end
 -- ===========================================================================
 
 local function dispatch(tool_name, args, player_name)
+    tool_name = tostring(tool_name or "")
+    if type(args) ~= "table" then args = {} end
+    if type(player_name) ~= "string" or player_name == "" then
+        return {ok=false, message="worldedit_agent: missing player_name; call run('tool_name', {args...}, player_name)"}
+    end
+    if not worldedit then
+        return {ok=false, message="worldedit_agent: WorldEdit is not loaded"}
+    end
 
     -- ── Selection ────────────────────────────────────────────
 
@@ -515,39 +523,78 @@ local TOOLS = {
 -- ===========================================================================
 
 local function do_register()
-    if not (core.global_exists("llm_connect") and llm_connect.registry) then
+    local root = rawget(_G, "llm_connect")
+    if type(root) ~= "table" or type(root.registry) ~= "table" then
         core.log("warning", "[worldedit_agent] llm_connect.registry not available — not registering")
         return
     end
 
-    llm_connect.registry.register({
+    root.skills = root.skills or {}
+    local function normalize_run_args(a, b, c)
+        -- Preferred: run('cube', {width=5}, player_name)
+        if type(a) == "string" and type(b) == "table" and type(c) == "string" then
+            return a, b, c
+        end
+        -- Common accidental variant: run('cube', player_name, {width=5})
+        if type(a) == "string" and type(b) == "string" and type(c) == "table" then
+            return a, c, b
+        end
+        -- Single spec table: run({tool='cube', args={...}}, player_name)
+        if type(a) == "table" and type(b) == "string" then
+            local tool = a.tool or a.name or a.action
+            local args = a.args or a.params or a.parameters or a
+            return tool, args, b
+        end
+        -- Spec table with embedded player: run({tool='cube', player_name=player_name, ...})
+        if type(a) == "table" then
+            local tool = a.tool or a.name or a.action
+            local args = a.args or a.params or a.parameters or a
+            local player = a.player_name or a.player or b or c
+            return tool, args, player
+        end
+        return a, b, c
+    end
+
+    root.skills.worldedit_agent = {
+        run = function(a, b, c)
+            local tool_name, args, player_name = normalize_run_args(a, b, c)
+            return dispatch(tool_name, args or {}, player_name)
+        end,
+        get_context = get_context,
+        snapshot = snapshot_hook,
+        restore = restore_hook,
+    }
+
+    local api = {
+        "Preferred call form: llm_connect.skills.worldedit_agent.run('tool_name', {arg=value}, player_name)",
+        "Do not omit player_name. Do not pass player_name as the first argument.",
+        "llm_connect.skills.worldedit_agent.run('set_pos1', {x=0,y=0,z=0}, player_name)",
+        "llm_connect.skills.worldedit_agent.run('set_pos2', {x=10,y=10,z=10}, player_name)",
+        "llm_connect.skills.worldedit_agent.run('set_region', {node='default:stone'}, player_name)",
+        "llm_connect.skills.worldedit_agent.run('clear_region', {}, player_name)",
+        "llm_connect.skills.worldedit_agent.run('cube', {width=5,height=3,length=5,node='default:stone',hollow=false}, player_name)",
+        "llm_connect.skills.worldedit_agent.run('sphere', {radius=4,node='default:glass',hollow=true}, player_name)",
+    }
+
+    root.registry.register_skill({
         id          = "worldedit_agent",
         label       = "WorldEdit Agent",
-        version     = "1.0.0",
-        description = "Direct WorldEdit Lua API access: region ops, primitives, WEA tools. Requires worldedit mod.",
-
+        version     = "1.1.0-dev",
+        description = "Lua-first WorldEdit bridge: selections, region operations, primitives and optional WEA tools.",
+        required_priv = "llm_agent",
+        default_enabled = false,
         available = function()
             return type(worldedit) == "table"
                 and (type(worldedit.set) == "function"
                      or type(worldedit.set_node) == "function"
                      or next(worldedit) ~= nil)
         end,
-
-        privilege   = "llm_agent",
-        tools       = TOOLS,
-        dispatch    = dispatch,
+        api = api,
         get_context = get_context,
-
         snapshot_hook = snapshot_hook,
         restore_hook  = restore_hook,
-
-        on_enable = function(player_name)
-            core.log("action", "[worldedit_agent] enabled for " .. player_name)
-        end,
-        on_disable = function(player_name)
-            core.log("action", "[worldedit_agent] disabled for " .. player_name)
-        end,
-    }, "addons/worldedit_agent/worldedit_agent.lua")
+        tool_count = #TOOLS,
+    })
 end
 
 do_register()

@@ -1,9 +1,12 @@
 -- ===========================================================================
---  basic_context.lua — LLM Connect 1.0 Basic Context Provider
+--  basic_context.lua — LLM Connect 1.1 Lua-first Basic Context Provider
 --  author: H5N3RG
 --  license: LGPL-3.0-or-later
 --
---  ROLE: Basic context provider for all agents.
+--  ROLE:
+--    Small, stable world/player/server context for every LLM turn.
+--    This module deliberately does NOT provide tool knowledge. Skills provide
+--    their own context/schema through registry.lua when enabled.
 --
 --  TWO LAYERS (per-player configurable, selectable in config_gui):
 --
@@ -11,7 +14,7 @@
 --    - Player name, position, HP, breath, held item
 --    - Server name, game, engine version, in-game time, online player count
 --    - All other players: name + position
---    - ALL registered chat commands: name + description + params syntax
+--    - Lua action contract: what the runtime exposes and what is forbidden
 --
 --  ERWEITERT (opt-in per player):
 --    - Everything from BASIS
@@ -20,10 +23,10 @@
 --    - Filtered by mod picker: player selects which mods to include
 --    - Picker state is persisted per world (mod-filtered selection)
 --
---  PICKER STATE PERSISTENCE:
---    Stored in <world_path>/llm_basic_context_state.json
---    Format: { [player_name] = { layer, types, mods } }
---    Loaded on first get() call per player, saved on every change.
+--  IMPORTANT ARCHITECTURE RULE:
+--    Chatcommands, WorldEdit APIs, node manipulation helpers, Mesecons bridges,
+--    etc. belong to Lua-first skills. basic_context.lua only gives general
+--    orientation and a minimal safe Lua runtime contract.
 --
 --  PUBLIC API:
 --    M.get(player_name)                        → string  (context string for LLM)
@@ -36,10 +39,6 @@
 --    M.select_all_mods(player_name)            → void
 --    M.select_no_mods(player_name)             → void
 --    M.save_state()                            → void  (callable externally)
---
---  USAGE in agent.lua / do_iteration():
---    local basic_ctx = get_basic_context()
---    local ctx_str   = basic_ctx.get(player_name)
 --
 -- ===========================================================================
 
@@ -146,6 +145,25 @@ local function ensure_mod_state(ps)
             ps.mods[mod] = true
         end
     end
+end
+
+local function safe_text(v, fallback)
+    v = tostring(v or fallback or "")
+    v = v:gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+    return v
+end
+
+local function groups_preview(groups, max_items)
+    if type(groups) ~= "table" then return "" end
+    local keys = {}
+    for k, val in pairs(groups) do
+        if val and val ~= 0 then keys[#keys + 1] = tostring(k) end
+    end
+    table.sort(keys)
+    local out = {}
+    for i = 1, math.min(#keys, max_items or 4) do out[#out + 1] = keys[i] end
+    if #keys > #out then out[#out + 1] = "…" end
+    return table.concat(out, ",")
 end
 
 -- ===========================================================================
@@ -278,86 +296,30 @@ local function build_other_players(player_name)
     return "Other players:\n" .. table.concat(lines, "\n")
 end
 
--- Alle registrierten Chat-Commands: Name + Beschreibung + Params-Syntax
--- Builds the command list for the LLM context.
--- Filters to commands the player actually has privilege to run.
--- Caps at MAX_COMMANDS to avoid token budget explosion on modded servers.
--- Standard well-known commands (teleport, give, time, etc.) are always shown
--- first; mod-specific commands fill the remaining slots.
-local MAX_COMMANDS = 40
+-- Lua-first runtime contract shown in every prompt.
+-- Keep this short: skill-specific APIs are injected by registry.lua.
+local function build_lua_runtime_contract(player_name)
+    local player = core.get_player_by_name(player_name)
+    local parts = {
+        "Lua action runtime:",
+        "- Normal chat should stay plain text. Use hidden ```lua_action blocks only when an enabled skill/action is needed.",
+        "- In lua_action code, player_name is available as the current player's name.",
+        "- core is available with the safe runtime subset configured by core_executor.lua.",
+        "- Get the player with: local player = core.get_player_by_name(player_name)",
+        '- Finish actions with: return { done = true, message = "short result" }',
+        '- Ask for another action step only with: return { done = false, continue = true, message = "why" }',
+        "- Do not register nodes/items/entities/craftitems during runtime; Luanti registrations are load-time only.",
+        "- Do not use JSON tool calls. Enabled skills expose Lua APIs through the registry context.",
+    }
 
--- Commands the LLM should always see when the player has access,
--- because they are universally useful for agent actions.
-local PRIORITY_COMMANDS = {
-    "teleport", "tp", "give", "time", "weather", "set_password",
-    "spawn", "home", "sethome", "kill", "kick", "ban", "unban",
-    "grant", "revoke", "privs", "clearobjects", "deleteblocks",
-}
-local PRIORITY_SET = {}
-for _, c in ipairs(PRIORITY_COMMANDS) do PRIORITY_SET[c] = true end
-
-local function build_commands(player_name)
-    local cmds = core.registered_chatcommands
-    if not cmds then return "(no commands registered)" end
-
-    local player_privs = core.get_player_privs(player_name) or {}
-    local is_root      = player_privs["llm_root"] == true
-
-    -- Helper: does the player have all required privs for a command?
-    local function can_run(def)
-        if is_root then return true end
-        if not def.privs or next(def.privs) == nil then return true end
-        for priv in pairs(def.privs) do
-            if not player_privs[priv] then return false end
-        end
-        return true
+    if player then
+        local pos = player:get_pos()
+        table.insert(parts, string.format(
+            "Common pattern: player:set_pos({x=%.1f, y=%.1f, z=%.1f})",
+            pos.x, pos.y, pos.z))
     end
 
-    -- Separate into priority and other, both filtered by privilege
-    local priority, others = {}, {}
-    for name, def in pairs(cmds) do
-        if can_run(def) then
-            local entry = { name = name, def = def }
-            if PRIORITY_SET[name] then
-                table.insert(priority, entry)
-            else
-                table.insert(others, entry)
-            end
-        end
-    end
-
-    table.sort(priority, function(a, b) return a.name < b.name end)
-    table.sort(others,   function(a, b) return a.name < b.name end)
-
-    -- Merge: priority first, then fill up to MAX_COMMANDS with others
-    local merged = {}
-    for _, e in ipairs(priority) do table.insert(merged, e) end
-    for _, e in ipairs(others) do
-        if #merged >= MAX_COMMANDS then break end
-        table.insert(merged, e)
-    end
-
-    local total_accessible = #priority + #others
-    local lines = { "Available chat commands (player-accessible, "
-        .. #merged .. "/" .. total_accessible .. "):" }
-
-    for _, entry in ipairs(merged) do
-        local desc   = entry.def.description or ""
-        local params = entry.def.params or ""
-        if params ~= "" then
-            table.insert(lines, string.format("  /%s %s — %s", entry.name, params, desc))
-        else
-            table.insert(lines, string.format("  /%s — %s", entry.name, desc))
-        end
-    end
-
-    if total_accessible > MAX_COMMANDS then
-        table.insert(lines, string.format(
-            "  … and %d more (use run_chat_command with any valid command name)",
-            total_accessible - MAX_COMMANDS))
-    end
-
-    return table.concat(lines, "\n")
+    return table.concat(parts, "\n")
 end
 
 -- ===========================================================================
@@ -365,6 +327,31 @@ end
 -- ===========================================================================
 
 -- Builds the extended context block from registry cache + player filter state
+local function preview_registered_def(def)
+    if type(def) ~= "table" then return "" end
+    local desc = safe_text(def.description or def.short_description or "")
+    local groups = groups_preview(def.groups, 4)
+    local bits = {}
+    if desc ~= "" then bits[#bits + 1] = desc end
+    if groups ~= "" then bits[#bits + 1] = "groups=" .. groups end
+    if #bits == 0 then return "" end
+    return " (" .. table.concat(bits, "; ") .. ")"
+end
+
+local function append_named_entries(lines, label, names, registry, max_entries)
+    if not names or #names == 0 then return end
+    local shown = {}
+    local limit = math.min(#names, max_entries or 24)
+    for i = 1, limit do
+        local name = names[i]
+        shown[#shown + 1] = name .. preview_registered_def(registry and registry[name])
+    end
+    if #names > limit then shown[#shown + 1] = "…" .. tostring(#names - limit) .. " more" end
+    lines[#lines + 1] = "  " .. label .. ": " .. table.concat(shown, ", ")
+end
+
+-- Builds the extended context block from registry cache + player filter state.
+-- This remains opt-in because modded servers can expose huge registries.
 local function build_extended(ps)
     local cache = build_registry_cache()
     ensure_mod_state(ps)
@@ -373,7 +360,6 @@ local function build_extended(ps)
     local mod_sel  = ps.mods
     local parts    = {}
 
-    -- Ordered mod list for deterministic output
     local selected_mods = {}
     for mod, selected in pairs(mod_sel) do
         if selected then table.insert(selected_mods, mod) end
@@ -381,41 +367,39 @@ local function build_extended(ps)
     table.sort(selected_mods)
 
     if #selected_mods == 0 then
-        return "(extended context: no mods selected in picker)"
+        return "(extended registry: no mods selected in picker)"
     end
 
     for _, mod in ipairs(selected_mods) do
         local mod_data = cache[mod]
-        if not mod_data then goto continue end
+        if mod_data then
+            local mod_lines = {}
 
-        local mod_lines = {}
+            if types.nodes and #mod_data.nodes > 0 then
+                append_named_entries(mod_lines, "nodes", mod_data.nodes, core.registered_nodes, 18)
+            end
+            if types.items and #mod_data.items > 0 then
+                local item_defs = {}
+                for k, v in pairs(core.registered_tools or {}) do item_defs[k] = v end
+                for k, v in pairs(core.registered_craftitems or {}) do item_defs[k] = v end
+                append_named_entries(mod_lines, "items", mod_data.items, item_defs, 18)
+            end
+            if types.entities and #mod_data.entities > 0 then
+                append_named_entries(mod_lines, "entities", mod_data.entities, core.registered_entities, 14)
+            end
 
-        if types.nodes and #mod_data.nodes > 0 then
-            table.insert(mod_lines,
-                "  nodes: " .. table.concat(mod_data.nodes, ", "))
+            if #mod_lines > 0 then
+                table.insert(parts, "[" .. mod .. "]")
+                for _, l in ipairs(mod_lines) do table.insert(parts, l) end
+            end
         end
-        if types.items and #mod_data.items > 0 then
-            table.insert(mod_lines,
-                "  items: " .. table.concat(mod_data.items, ", "))
-        end
-        if types.entities and #mod_data.entities > 0 then
-            table.insert(mod_lines,
-                "  entities: " .. table.concat(mod_data.entities, ", "))
-        end
-
-        if #mod_lines > 0 then
-            table.insert(parts, "[" .. mod .. "]")
-            for _, l in ipairs(mod_lines) do table.insert(parts, l) end
-        end
-
-        ::continue::
     end
 
     if #parts == 0 then
-        return "(extended context: no matching entries for selected types/mods)"
+        return "(extended registry: no matching entries for selected types/mods)"
     end
 
-    return "Registered objects (filtered by picker):\n" .. table.concat(parts, "\n")
+    return "Extended registry objects (filtered by picker; use only when relevant):\n" .. table.concat(parts, "\n")
 end
 
 -- ===========================================================================
@@ -494,8 +478,7 @@ end
 
 -- ===========================================================================
 -- PUBLIC API — M.get(player_name)
--- Main function: returns the full context string.
--- Called by agent.lua's do_iteration() on every iteration.
+-- Main function: returns the full context string for the current LLM turn.
 -- ===========================================================================
 
 function M.get(player_name)
@@ -515,8 +498,8 @@ function M.get(player_name)
     table.insert(parts, "-- World --")
     table.insert(parts, build_other_players(player_name))
 
-    table.insert(parts, "-- Commands --")
-    table.insert(parts, build_commands(player_name))
+    table.insert(parts, "-- Lua Runtime Contract --")
+    table.insert(parts, build_lua_runtime_contract(player_name))
 
     -- ── ERWEITERT layer (opt-in) ──────────────────────────────────────────
 
@@ -532,6 +515,6 @@ end
 
 -- ===========================================================================
 
-core.log("action", "[basic_context] module loaded")
+core.log("action", "[basic_context] module loaded — Lua-first basic context")
 
 return M

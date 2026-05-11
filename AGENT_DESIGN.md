@@ -1,3 +1,5 @@
+> **Deprecated design note:** This document describes the old 1.0.0-dev JSON `tool_calls` agent. v1.1.0-dev supersedes this design with Lua-first orchestration: `agent.lua → parser_utils.lua → core_executor.lua`. Keep this file only as historical context until a new agent design document replaces it.
+
 # agent.lua — Architektur & Design
 
 Dieses Dokument beschreibt die Konzeption von `agent.lua` bevor die

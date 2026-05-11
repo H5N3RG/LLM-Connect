@@ -130,6 +130,12 @@ local function get_executor()
     return ex
 end
 
+local function get_storage()
+    local st = _G.ide_storage
+    if not st then error("[ide_gui] ide_storage not available — check init.lua load order") end
+    return st
+end
+
 local function get_llm_api()
     if not _G.llm_api then error("[ide_gui] llm_api not available — check init.lua load order") end
     return _G.llm_api
@@ -192,8 +198,11 @@ local function get_session(name)
             api_level        = nil,
             last_run_output  = nil,
             run_failed       = false,
+            persist_backend  = "llm_runtime",
+            active_modname   = "llm_live_mod",
+            current_dir      = "",
         }
-        sessions[name].file_list = list_snippet_files()
+        sessions[name].file_list = get_storage().list(name, sessions[name])
     end
     return sessions[name]
 end
@@ -244,7 +253,9 @@ function M.show(name)
     end
 
     local session  = get_session(name)
-    session.file_list = list_snippet_files()
+    local storage = get_storage()
+    storage.ensure_session(session)
+    session.file_list = storage.list(name, session)
 
     local code_field = "code_" .. (session.code_rev or 0)
     local code_esc   = core.formspec_escape(session.code or "")
@@ -280,6 +291,12 @@ function M.show(name)
     -- ── Header ───────────────────────────────────────────────
     table.insert(fs, "box[0,0;" .. W .. "," .. HEADER_H .. ";#1e1e1e]")
     table.insert(fs, "label[" .. PAD .. "," .. (HEADER_H/2 - 0.15) .. ";Smart Lua IDE  |  " .. fn_esc .. "]")
+    local backend_label = storage.status(session)
+    table.insert(fs, "label[" .. 7.4 .. "," .. (HEADER_H/2 - 0.15) .. ";Backend: " .. core.formspec_escape(backend_label) .. "]")
+    if storage.can_switch_backend(name) then
+        table.insert(fs, "button[" .. 12.7 .. ",0.08;1.7,0.65;backend_switch;Switch]")
+        table.insert(fs, "tooltip[backend_switch;Switch persistence backend: LLM Runtime <-> Trusted Worldmod]")
+    end
     table.insert(fs, "label[" .. (W - 6.2) .. "," .. (HEADER_H/2 - 0.15) .. ";" .. os.date("%H:%M") .. "]")
     table.insert(fs, "style[close_ide;bgcolor=#3a1a1a;textcolor=#ffaaaa]")
     table.insert(fs, "button[" .. (W - PAD - 2.0) .. ",0.08;2.0,0.65;close_ide;x Close]")
@@ -303,6 +320,10 @@ function M.show(name)
     add_btn("analyze", "Analyze",  "AI: find logic & API issues", true)
     add_btn("explain", "Explain",  "AI: explain the code in plain language", true)
     add_btn("run",     "▶ Run",    can_execute(name) and (((get_execution_ctx(name) or {}).execution_mode == "unrestricted") and "Execute unrestricted (root)" or "Execute in sandbox") or "Needs llm_dev", can_execute(name))
+    if is_root(name) and core.settings:get_bool("llm_ide_hot_reload", true) then
+        table.insert(fs, "style[hot_reload;bgcolor=#4a3a1a;textcolor=#ffeeaa]")
+        add_btn("hot_reload", "↻ Reload", "Save through active backend and hot-reload if runtime-safe", true)
+    end
 
     if session.run_failed then
         table.insert(fs, "style[auto_fix;bgcolor=#3a1a00;textcolor=#ffcc44]")
@@ -329,9 +350,10 @@ function M.show(name)
         end
     end
 
-    local DD_W   = 4.5
-    local BTN_SM = 1.4
-    local FN_W   = W - PAD * 6 - DD_W - BTN_SM * 3
+    local DD_W   = 4.3
+    local BTN_SM = 1.35
+    local FN_W   = W - PAD * 8 - DD_W - BTN_SM * 5
+    if FN_W < 3.0 then FN_W = 3.0 end
     local fbh    = FILE_H - 0.05
 
     table.insert(fs, "dropdown[" .. PAD .. "," .. file_y .. ";" .. DD_W .. "," .. fbh
@@ -341,6 +363,9 @@ function M.show(name)
     local fx = PAD + DD_W + PAD
     table.insert(fs, "button[" .. fx .. "," .. file_y .. ";" .. BTN_SM .. "," .. fbh .. ";file_load;Load]")
     table.insert(fs, "tooltip[file_load;Load selected file into editor]")
+    fx = fx + BTN_SM + PAD
+    table.insert(fs, "button[" .. fx .. "," .. file_y .. ";" .. BTN_SM .. "," .. fbh .. ";files_open;Files]")
+    table.insert(fs, "tooltip[files_open;Open small file manager subformspec]")
     fx = fx + BTN_SM + PAD
 
     table.insert(fs, "field[" .. fx .. "," .. file_y .. ";" .. FN_W .. "," .. fbh .. ";filename_input;;" .. fn_esc .. "]")
@@ -352,7 +377,7 @@ function M.show(name)
     if is_root(name) then
         table.insert(fs, "style[file_save;bgcolor=#2a4a6a;textcolor=#ffffff]")
         table.insert(fs, "button[" .. fx .. "," .. file_y .. ";" .. BTN_SM .. "," .. fbh .. ";file_save;Save]")
-        table.insert(fs, "tooltip[file_save;Save editor content as the given filename]")
+        table.insert(fs, "tooltip[file_save;Save editor content through active persistence backend]")
         fx = fx + BTN_SM + PAD
         table.insert(fs, "button[" .. fx .. "," .. file_y .. ";" .. BTN_SM .. "," .. fbh .. ";file_new;New]")
         table.insert(fs, "tooltip[file_new;Clear editor for a new file]")
@@ -421,7 +446,7 @@ function M.show(name)
     -- ── Status Bar ────────────────────────────────────────────
     local sy = H - STATUS_H - PAD
     table.insert(fs, "box[0," .. sy .. ";" .. W .. "," .. STATUS_H .. ";#1e1e1e]")
-    local status = "File: " .. fn_esc .. "  |  Modified: " .. os.date("%H:%M", session.last_modified)
+    local status = "File: " .. fn_esc .. "  |  Backend: " .. core.formspec_escape(storage.status(session)) .. "  |  Modified: " .. os.date("%H:%M", session.last_modified)
     if session.pending_proposal then status = status .. "  |  ★ PROPOSAL READY – click Apply" end
     local ctx_flags = {}
     if session.guiding_active  then ctx_flags[#ctx_flags+1] = "guide" end
@@ -434,11 +459,45 @@ function M.show(name)
     core.show_formspec(name, "llm_connect:ide", table.concat(fs))
 end
 
+
+-- ===========================================================================
+-- File manager subformspec
+-- ===========================================================================
+
+function M.show_file_manager(name)
+    if not can_use_ide(name) then return end
+    local fm = _G.ide_file_manager
+    if not fm or not fm.show then
+        core.chat_send_player(name, "[LLM IDE] File manager module unavailable")
+        return
+    end
+    local session = get_session(name)
+    get_storage().ensure_session(session)
+    fm.show(name, session)
+end
+
+local function handle_file_manager(name, fields)
+    local fm = _G.ide_file_manager
+    if not fm or not fm.handle_fields then
+        core.chat_send_player(name, "[LLM IDE] File manager module unavailable")
+        return true
+    end
+    local session = get_session(name)
+    get_storage().ensure_session(session)
+    return fm.handle_fields(name, fields, session, {
+        show_ide = function(player_name) M.show(player_name) end,
+    })
+end
 -- ===========================================================================
 -- M.handle_fields
 -- ===========================================================================
 
 function M.handle_fields(name, formname, fields)
+    if not can_use_ide(name) then
+        core.chat_send_player(name, "[LLM] Missing privilege: llm_dev (or llm_root)")
+        return true
+    end
+
     -- Asset picker sub-formspec forwarding
     if formname:match("^llm_connect:ide_asset_picker") then
         local ap = _G.ide_asset_picker
@@ -452,9 +511,14 @@ function M.handle_fields(name, formname, fields)
         return false
     end
 
+    if formname == "llm_connect:ide_file_manager" then
+        return handle_file_manager(name, fields)
+    end
+
     if not formname:match("^llm_connect:ide") then return false end
 
     local session = get_session(name)
+    get_storage().ensure_session(session)
     local updated = false
 
     -- ── Code textarea sync ────────────────────────────────────
@@ -474,8 +538,20 @@ function M.handle_fields(name, formname, fields)
         session.filename = fields.filename_input
     end
 
+    -- ── Backend / file-manager controls ───────────────────────
+    if fields.backend_switch and is_root(name) then
+        local storage = get_storage()
+        session.persist_backend = storage.next_backend(name, session.persist_backend)
+        session.file_list = storage.list(name, session)
+        session.output = "Backend switched to: " .. storage.status(session)
+        updated = true
+
+    elseif fields.files_open then
+        M.show_file_manager(name)
+        return true
+
     -- ── Context toggles ───────────────────────────────────────
-    if fields.guide_toggle ~= nil then
+    elseif fields.guide_toggle ~= nil then
         session.guiding_active = fields.guide_toggle == "true"
         updated = true
 
@@ -503,39 +579,36 @@ function M.handle_fields(name, formname, fields)
         local dd = fields.file_dropdown
         local target = dd and dd ~= "(no files)" and dd or nil
         if target then
-            local path = ensure_snippets_dir() .. "/" .. target
-            local content, read_err = read_file(path)
+            local content, read_err = get_storage().read(name, session, target)
             if content then
                 session.code          = content
                 session.code_rev      = (session.code_rev or 0) + 1
-                session.filename      = target
+                session.filename      = target:match("([^/]+)$") or target
+                session.selected_file = target
                 session.last_modified = os.time()
-                session.output        = "✓ Loaded: " .. target
+                session.output        = "✓ Loaded: " .. target .. "\nBackend: " .. get_storage().status(session)
             else
                 session.output = "✗ Could not read: " .. target
                     .. (read_err and ("\nError: " .. tostring(read_err)) or "")
-                index_remove(target)
-                session.file_list = list_snippet_files()
+                session.file_list = get_storage().list(name, session)
             end
         end
         updated = true
 
     elseif fields.file_save and is_root(name) then
-        local fn = session.filename
-        if fn == "" then fn = "untitled.lua" end
-        if not fn:match("%.lua$") then fn = fn .. ".lua" end
-        fn = fn:match("([^/\\]+)$") or fn
-        session.filename = fn
-        local path    = ensure_snippets_dir() .. "/" .. fn
-        local ok, err = write_file(path, session.code)
+        local ok, rel_or_err, classification = get_storage().save(name, session, session.code)
         if ok then
-            index_add(fn)
-            session.output        = "✓ Saved: " .. fn
+            session.output        = "✓ Saved: " .. tostring(rel_or_err)
+                .. "\nBackend: " .. get_storage().status(session)
+            local rt = _G.runtime_scripts or (_G.llm_connect and _G.llm_connect.runtime_scripts)
+            if rt and rt.format_class_summary and classification then
+                session.output = session.output .. "\n\n" .. rt.format_class_summary(classification)
+            end
             session.last_modified = os.time()
-            session.file_list     = list_snippet_files()
-            session.selected_file = fn
+            session.file_list     = get_storage().list(name, session)
+            session.selected_file = tostring(rel_or_err)
         else
-            session.output = "✗ Save failed: " .. tostring(err)
+            session.output = "✗ Save failed: " .. tostring(rel_or_err)
         end
         updated = true
 
@@ -545,7 +618,7 @@ function M.handle_fields(name, formname, fields)
         session.filename         = "untitled.lua"
         session.last_modified    = os.time()
         session.pending_proposal = nil
-        session.output           = "New file ready. Write code and save."
+        session.output           = "New file ready. Write code and save.\nBackend: " .. get_storage().status(session)
         updated = true
 
     -- ── Toolbar actions ───────────────────────────────────────
@@ -558,6 +631,9 @@ function M.handle_fields(name, formname, fields)
 
     elseif fields.run and can_execute(name) then
         M.run_code(name); return true
+
+    elseif fields.hot_reload and is_root(name) and core.settings:get_bool("llm_ide_hot_reload", true) then
+        M.hot_reload(name); return true
 
     elseif fields.auto_fix and can_execute(name) then
         M.auto_fix(name); return true
@@ -709,10 +785,11 @@ function M.run_code(name)
     session.run_failed = false
     M.show(name)
 
-    local exec_ctx  = get_execution_ctx(name)
-    local res      = executor.execute(name, session.code, {
+    local exec_ctx = get_execution_ctx(name)
+    local res = executor.execute(name, session.code, {
         sandbox  = (exec_ctx and exec_ctx.sandbox_enabled) ~= false,
         profile  = exec_ctx and exec_ctx.profile or nil,
+        purpose  = "ide",
         precheck = true,
     })
     local pre_warn = res.precheck_warnings or ""
@@ -734,6 +811,38 @@ function M.run_code(name)
         session.output          = err_out
         session.last_run_output = err_out
         session.run_failed      = true
+    end
+    M.show(name)
+end
+
+
+function M.hot_reload(name)
+    local session = get_session(name)
+    local storage = get_storage()
+    storage.ensure_session(session)
+    session.output = "Saving + hot-reloading…"
+    M.show(name)
+
+    local res = storage.hot_reload(name, session, session.code)
+    local rt = _G.runtime_scripts or (_G.llm_connect and _G.llm_connect.runtime_scripts)
+    local summary = (rt and rt.format_class_summary and res.classification) and ("\n\n" .. rt.format_class_summary(res.classification)) or ""
+
+    if res.success or res.saved then
+        local out = "✓ Saved: " .. tostring(res.relpath or session.filename)
+        if res.reloaded then
+            out = out .. "\n✓ Hot reload executed."
+            if res.output and res.output ~= "" then out = out .. "\n\nOutput:\n" .. res.output end
+        else
+            out = out .. "\n⚠ Not hot-reloaded: " .. tostring(res.message or res.error or "not runtime-safe")
+        end
+        session.output = out .. summary
+        session.last_modified = os.time()
+        session.file_list = storage.list(name, session)
+        session.last_run_output = session.output
+        session.run_failed = false
+    else
+        session.output = "✗ Hot reload failed:\n" .. tostring(res.error or "Unknown error") .. summary
+        session.run_failed = true
     end
     M.show(name)
 end
@@ -761,6 +870,7 @@ function M.auto_fix(name)
     executor.execute_with_retry(name, session.code, {
         sandbox        = (exec_ctx and exec_ctx.sandbox_enabled) ~= false,
         profile        = exec_ctx and exec_ctx.profile or nil,
+        purpose        = "ide",
         max_iterations = max_iter,
         llm_request    = function(messages, cb)
             llm_api.request(messages, cb, {timeout = llm_api.get_timeout("ide")})
