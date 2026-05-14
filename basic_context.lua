@@ -4,20 +4,21 @@
 --  license: LGPL-3.0-or-later
 --
 --  ROLE:
---    Small, stable world/player/server context for every LLM turn.
---    This module deliberately does NOT provide tool knowledge. Skills provide
---    their own context/schema through registry.lua when enabled.
+--    Small, stable world/player/server context for chat and agent turns.
+--    This module deliberately keeps plain chat separate from agent runtime
+--    instructions. Skills provide their own context/schema through registry.lua
+--    and context_registry.lua when enabled.
 --
 --  TWO LAYERS (per-player configurable, selectable in config_gui):
 --
---  BASIS (always active, cannot be disabled):
+--  BASIC (internal value: "basis"; always active, cannot be disabled):
 --    - Player name, position, HP, breath, held item
 --    - Server name, game, engine version, in-game time, online player count
 --    - All other players: name + position
---    - Lua action contract: what the runtime exposes and what is forbidden
+--    - Chat mode excludes the Lua action contract; agent mode adds it explicitly
 --
---  ERWEITERT (opt-in per player):
---    - Everything from BASIS
+--  EXTENDED (internal value: "erweitert"; opt-in per player):
+--    - Everything from BASIC
 --    - Nodes / Items / Entities from Luanti registry
 --    - Filtered by type toggle (Nodes ✓/✗, Items ✓/✗, Entities ✓/✗)
 --    - Filtered by mod picker: player selects which mods to include
@@ -29,7 +30,9 @@
 --    orientation and a minimal safe Lua runtime contract.
 --
 --  PUBLIC API:
---    M.get(player_name)                        → string  (context string for LLM)
+--    M.get_chat(player_name)                   → string  (plain chat context, no tools)
+--    M.get_agent(player_name)                  → string  (agent context with Lua contract)
+--    M.get(player_name)                        → string  (compat alias for get_agent)
 --    M.get_layer(player_name)                  → "basis" | "erweitert"
 --    M.set_layer(player_name, layer)           → void
 --    M.get_types(player_name)                  → { nodes=bool, items=bool, entities=bool }
@@ -46,7 +49,7 @@ local core = core
 local M    = {}
 
 -- ===========================================================================
--- Persistenter State
+-- Persistent state
 -- ===========================================================================
 
 -- File storing all player states
@@ -87,7 +90,7 @@ local function load_state()
     end
 end
 
--- Speichert den aktuellen State in die JSON-Datei
+-- Save the current state into the JSON file
 function M.save_state()
     local ok, encoded = pcall(core.write_json, player_states)
     if not ok then
@@ -230,7 +233,7 @@ core.register_on_mods_loaded(function()
 end)
 
 -- ===========================================================================
--- BASIS-LAYER Hilfsfunktionen
+-- BASIC LAYER HELPERS
 -- ===========================================================================
 
 -- Server name + game + engine + in-game time + player count
@@ -296,8 +299,8 @@ local function build_other_players(player_name)
     return "Other players:\n" .. table.concat(lines, "\n")
 end
 
--- Lua-first runtime contract shown in every prompt.
--- Keep this short: skill-specific APIs are injected by registry.lua.
+-- Lua-first runtime contract for AGENT MODE only.
+-- Keep this out of plain chat; detailed APIs are fetched on demand through context_registry.lua.
 local function build_lua_runtime_contract(player_name)
     local player = core.get_player_by_name(player_name)
     local parts = {
@@ -309,7 +312,7 @@ local function build_lua_runtime_contract(player_name)
         '- Finish actions with: return { done = true, message = "short result" }',
         '- Ask for another action step only with: return { done = false, continue = true, message = "why" }',
         "- Do not register nodes/items/entities/craftitems during runtime; Luanti registrations are load-time only.",
-        "- Do not use JSON tool calls. Enabled skills expose Lua APIs through the registry context.",
+        "- Detailed skill/API/server docs are not injected by default. Use llm_connect.context.list_sections(), search(query), and get_section(id) when details are needed.",
     }
 
     if player then
@@ -323,7 +326,7 @@ local function build_lua_runtime_contract(player_name)
 end
 
 -- ===========================================================================
--- ERWEITERT-LAYER Hilfsfunktionen
+-- EXTENDED LAYER HELPERS
 -- ===========================================================================
 
 -- Builds the extended context block from registry cache + player filter state
@@ -431,7 +434,7 @@ end
 function M.set_type(player_name, type_key, enabled)
     local ps = get_state(player_name)
     if ps.types[type_key] == nil then
-        core.log("warning", "[basic_context] set_type: unbekannter Typ: " .. tostring(type_key))
+        core.log("warning", "[basic_context] set_type: unknown type: " .. tostring(type_key))
         return
     end
     ps.types[type_key] = enabled == true
@@ -452,7 +455,7 @@ function M.set_mod_selected(player_name, mod_name, enabled)
     local ps = get_state(player_name)
     ensure_mod_state(ps)
     if ps.mods[mod_name] == nil and enabled == false then
-        -- Unbekannter Mod explizit deselektiert — zulassen
+        -- Unknown mod explicitly deselected — allow it
     end
     ps.mods[mod_name] = enabled == true
     M.save_state()
@@ -477,15 +480,15 @@ function M.select_no_mods(player_name)
 end
 
 -- ===========================================================================
--- PUBLIC API — M.get(player_name)
--- Main function: returns the full context string for the current LLM turn.
+-- PUBLIC API — mode-aware context builders
+-- Plain chat must not receive agent/runtime/tool instructions.
+-- Agent mode receives the Lua contract and optional extended registry.
 -- ===========================================================================
 
-function M.get(player_name)
-    local ps     = get_state(player_name)
-    local parts  = {}
-
-    -- ── BASIS layer (always) ─────────────────────────────────────────────
+local function build_common_context(player_name, opts)
+    opts = opts or {}
+    local ps    = get_state(player_name)
+    local parts = {}
 
     table.insert(parts, "=== GAME CONTEXT ===")
 
@@ -498,19 +501,46 @@ function M.get(player_name)
     table.insert(parts, "-- World --")
     table.insert(parts, build_other_players(player_name))
 
-    table.insert(parts, "-- Lua Runtime Contract --")
-    table.insert(parts, build_lua_runtime_contract(player_name))
+    if opts.include_runtime_contract then
+        table.insert(parts, "-- Lua Runtime Contract --")
+        table.insert(parts, build_lua_runtime_contract(player_name))
+    end
 
-    -- ── ERWEITERT layer (opt-in) ──────────────────────────────────────────
-
-    if ps.layer == "erweitert" then
+    if opts.include_extended and ps.layer == "erweitert" then
         table.insert(parts, "-- Extended Registry --")
         table.insert(parts, build_extended(ps))
     end
 
     table.insert(parts, "=== END CONTEXT ===")
-
     return table.concat(parts, "\n")
+end
+
+function M.get_chat(player_name)
+    local ctx = build_common_context(player_name, {
+        include_runtime_contract = false,
+        include_extended = false,
+    })
+
+    return table.concat({
+        "You are chatting with a player inside a Luanti server.",
+        "Answer normally in natural language. Do not emit Lua code, lua_action fences, tool calls, or hidden actions.",
+        "Use the game context only when it helps answer the player's question.",
+        "",
+        ctx,
+    }, "\n")
+end
+
+function M.get_agent(player_name)
+    return build_common_context(player_name, {
+        include_runtime_contract = true,
+        include_extended = true,
+    })
+end
+
+-- Compatibility: existing agent/IDE paths that still call basic_context.get()
+-- receive the agent-safe context. Plain chat must call get_chat() explicitly.
+function M.get(player_name)
+    return M.get_agent(player_name)
 end
 
 -- ===========================================================================

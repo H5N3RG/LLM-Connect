@@ -103,6 +103,8 @@ local function reset_state(name, message, options)
         visible_parts = {},
         action_results = {},
         tool_history = {},
+        failure_retries = 0,
+        last_failure_signature = nil,
         options = options or {},
     }
     return agent_state[name]
@@ -131,8 +133,11 @@ end
 
 local function collect_basic_context(player_name)
     local basic_context = get_basic_context()
-    if basic_context and basic_context.get then
-        local ok, ctx = pcall(basic_context.get, player_name)
+    if not basic_context then return "" end
+
+    local fn = basic_context.get_agent or basic_context.get
+    if type(fn) == "function" then
+        local ok, ctx = pcall(fn, player_name)
         if ok and ctx and ctx ~= "" then return tostring(ctx) end
         if not ok then core.log("warning", "[agent] basic_context failed: " .. tostring(ctx)) end
     end
@@ -147,10 +152,8 @@ local function collect_skill_context(player_name, options)
         local ok, text = pcall(registry.describe_for_agent, player_name, options and options.skill_filter)
         if ok and text and text ~= "" then parts[#parts + 1] = tostring(text) end
     end
-    if registry.get_contexts then
-        local ok, text = pcall(registry.get_contexts, player_name, options and options.skill_filter)
-        if ok and text and text ~= "" then parts[#parts + 1] = tostring(text) end
-    end
+    -- Do not inject full skill/API manuals here. Since 1.2-prep, detailed
+    -- context is fetched on demand through llm_connect.context.* from lua_action.
     return table.concat(parts, "\n\n")
 end
 
@@ -178,8 +181,10 @@ local function build_system_prompt(player_name, options)
         "",
         "Default behavior: answer normally in visible chat text.",
         "Only use a lua_action block when an active skill/context makes an in-game action necessary.",
-        "Never output JSON tool calls. Never wrap normal explanations in Lua.",
+        "Never wrap normal explanations in Lua. Keep visible chat text outside action blocks.",
         "Text outside lua_action is visible to the player. lua_action content is hidden and executed by core_executor.lua.",
+        "The prompt is intentionally compact. Do not guess missing APIs, node names, server state, or skill details.",
+        "When details are needed, first request focused context through llm_connect.context.* inside lua_action.",
         "",
         "Action block format:",
         "```lua_action",
@@ -193,7 +198,8 @@ local function build_system_prompt(player_name, options)
         "- Prefer small, reversible steps.",
         "- Do not register nodes/items/entities/crafts during runtime.",
         "- If no action is needed, do not emit any lua_action block.",
-        "- For multi-step work, an action may return {done=false, continue=true, message=\"...\"}; otherwise stop.",
+        "- For multi-step work, including context lookup before acting, return {done=false, continue=true, message=\"...\"}; otherwise stop.",
+        "- Self-context API: llm_connect.context.list_sections(), llm_connect.context.search(query), llm_connect.context.get_section(id).",
     }
 
     if basic ~= "" then
@@ -229,6 +235,16 @@ local function action_result_message(result)
     if result.success or result.ok then
         local rv = result.return_value
         if type(rv) == "table" then
+            if type(rv.content) == "string" and rv.content ~= "" then
+                return tostring(rv.message or "context loaded") .. "\n" .. rv.content
+            end
+            if type(rv.sections) == "table" then
+                local lines = { tostring(rv.message or "context sections") }
+                for _, sec in ipairs(rv.sections) do
+                    lines[#lines + 1] = string.format("- %s: %s", tostring(sec.id or "?"), tostring(sec.summary or sec.title or ""))
+                end
+                return table.concat(lines, "\n")
+            end
             return tostring(rv.message or rv.result or rv.status or "ok")
         end
         if result.output and result.output ~= "" then return result.output end
@@ -237,13 +253,117 @@ local function action_result_message(result)
     return tostring(result.error or "failed")
 end
 
+local function is_context_action_code(code)
+    code = tostring(code or "")
+    local uses_context = code:find("llm_connect%.context", 1, false) ~= nil
+    if not uses_context then return false end
+
+    -- Treat pure context lookups as intermediate steps. If a model combines
+    -- context and a real skill action in one block, let the explicit return
+    -- value decide whether to continue.
+    local uses_skill = code:find("llm_connect%.skills", 1, false) ~= nil
+    return not uses_skill
+end
+
+local function mark_context_continuation(result)
+    if not result or not (result.success or result.ok) then return end
+    if result.is_context_action ~= true then return end
+
+    -- Context lookups are intermediate agent steps, not final task answers.
+    -- Some models return the context proxy table directly, others wrap it into
+    -- their own {message=...} table, and weaker models may call the context API
+    -- but forget to set continue=true. Normalize all successful context actions
+    -- into a continuation request so the next iteration can use the loaded data.
+    if type(result.return_value) == "table" then
+        result.return_value.done = false
+        result.return_value.continue = true
+        if not result.return_value.message or result.return_value.message == "" then
+            result.return_value.message = "Context lookup completed"
+        end
+    else
+        result.return_value = {
+            done = false,
+            continue = true,
+            message = "Context lookup completed",
+        }
+    end
+end
+
 local function wants_continue(result)
     if not result or not (result.success or result.ok) then return false end
+    if result.is_context_action == true then return true end
     local rv = result.return_value
     if type(rv) ~= "table" then return false end
     if rv.continue == true then return true end
     if rv.done == false then return true end
     return false
+end
+
+local function action_history_entry(iteration, result)
+    local prefix = string.format(
+        "iteration %d action %d: %s — ",
+        iteration,
+        tonumber(result and result.index) or 0,
+        (result and (result.success or result.ok)) and "ok" or "failed"
+    )
+
+    local rv = result and result.return_value
+    if type(rv) == "table" and type(rv.content) == "string" and rv.content ~= "" then
+        local content = rv.content
+        if #content > 6000 then content = content:sub(1, 6000) .. "\n... [context truncated]" end
+        return prefix .. tostring(rv.message or "context loaded") .. "\n" .. content
+    end
+    if type(rv) == "table" and type(rv.sections) == "table" then
+        local lines = { prefix .. tostring(rv.message or "context sections") }
+        for _, sec in ipairs(rv.sections) do
+            lines[#lines + 1] = string.format("- %s: %s", tostring(sec.id or "?"), tostring(sec.summary or sec.title or ""))
+        end
+        return table.concat(lines, "\n")
+    end
+    if result and not (result.success or result.ok) then
+        local lines = { prefix .. one_line(result.error or result.message or "failed", 240) }
+        if result.action_code and result.action_code ~= "" then
+            lines[#lines + 1] = "Failed lua_action code:"
+            lines[#lines + 1] = "```lua"
+            lines[#lines + 1] = tostring(result.action_code)
+            lines[#lines + 1] = "```"
+        end
+        if result.traceback and result.traceback ~= "" then
+            lines[#lines + 1] = "Traceback/error detail:"
+            lines[#lines + 1] = one_line(result.traceback, 1200)
+        end
+        lines[#lines + 1] = "Repair instruction: either request focused context first, or emit a corrected lua_action. Do not repeat the same failing action."
+        return table.concat(lines, "\n")
+    end
+
+    return prefix .. one_line(result and (result.message or result.error or "") or "", 180)
+end
+
+local function failure_signature(result)
+    if not result then return nil end
+    local err = tostring(result.error or result.message or "")
+    local code = tostring(result.action_code or result.code or "")
+    return err:sub(1, 220) .. "\n" .. code:sub(1, 600)
+end
+
+local function should_retry_failed_actions(state, action_results)
+    if not state or not action_results or #action_results == 0 then return false end
+    local failed
+    for _, r in ipairs(action_results) do
+        if not (r.success or r.ok) then
+            failed = r
+            break
+        end
+    end
+    if not failed then return false end
+    if state.failure_retries and state.failure_retries >= 1 then return false end
+
+    local sig = failure_signature(failed)
+    if sig and state.last_failure_signature == sig then return false end
+    state.last_failure_signature = sig
+    state.failure_retries = (state.failure_retries or 0) + 1
+    core.log("warning", ("[agent] action failed; scheduling one repair iteration for %s"):format(tostring(state.message or "task")))
+    return true
 end
 
 local function execute_actions(player_name, actions)
@@ -264,6 +384,9 @@ local function execute_actions(player_name, actions)
         })
         result.tool = "lua_action"
         result.index = i
+        result.action_code = code
+        result.is_context_action = is_context_action_code(code)
+        mark_context_continuation(result)
         result.message = action_result_message(result)
         results[#results + 1] = result
     end
@@ -320,13 +443,7 @@ local function run_iteration(player_name, user_message, state, callbacks)
             action_results = execute_actions(player_name, actions)
             for _, r in ipairs(action_results) do
                 state.action_results[#state.action_results + 1] = r
-                state.tool_history[#state.tool_history + 1] = string.format(
-                    "iteration %d action %d: %s — %s",
-                    state.iteration,
-                    tonumber(r.index) or 0,
-                    (r.success or r.ok) and "ok" or "failed",
-                    one_line(r.message or r.error or "", 180)
-                )
+                state.tool_history[#state.tool_history + 1] = action_history_entry(state.iteration, r)
             end
         end
 
@@ -337,6 +454,9 @@ local function run_iteration(player_name, user_message, state, callbacks)
         local continue = false
         for _, r in ipairs(action_results) do
             if wants_continue(r) then continue = true break end
+        end
+        if not continue and should_retry_failed_actions(state, action_results) then
+            continue = true
         end
 
         if continue and state.iteration < state.max_iterations then

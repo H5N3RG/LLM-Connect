@@ -4,39 +4,43 @@
 --  license: LGPL-3.0-or-later
 --
 --  LOAD ORDER:
---    1. HTTP-API sichern
---    2. Privileges registrieren
---    3. llm_api.lua          — HTTP-Layer, API-Konfiguration
---    4. parser_utils.lua     — LLM-Output Parsing / Repair
---    5. basic_context.lua    — Basiskontext-Provider (Basis + Erweitert)
---    6. registry.lua         — Addon-Gateway, _G.llm_connect setzen
---       └ registry.expose_global()     → _G.llm_connect.registry bereit
---       └ registry.load_internal()     → addons/ scannen (außer smart_lua_ide)
---    7. execution_policy.lua — zentrale Root/Dev/Execution-Policy
---    8. path_policy.lua      — stack-relative filesystem roots
---    9. runtime_scripts.lua  — IDE persistence + hot-reload backend
---    9. trusted_mods.lua     — root-only trusted worldmod backend
---   10. core_executor.lua    — Shared Lua Runtime Backend
---   11. agent.lua            — Agent-Orchestrator
---   12. smart_lua_ide/       — First-Class Frontend, direkt geladen
+--    1. Preserve HTTP API handle
+--    2. Register privileges
+--    3. llm_api.lua          — HTTP layer, API configuration
+--    4. parser_utils.lua     — LLM output parsing / repair
+--    5. basic_context.lua    — base context provider (basic + extended)
+--    6. registry.lua         — skill gateway, set _G.llm_connect
+--       └ registry.expose_global()     → expose _G.llm_connect.registry
+--    7. context_registry.lua — agent self-context / retrieval layer
+--       └ registry.load_internal()     → load built-in skills after context exists
+--    8. execution_policy.lua — central root/dev execution policy
+--    9. path_policy.lua      — stack-relative filesystem roots
+--   10. storage_backends.lua — robust dir-list / filesystem helper layer
+--   11. runtime_scripts.lua  — IDE persistence + hot-reload backend
+--   12. trusted_mods.lua     — root-only trusted worldmod backend
+--   13. core_executor.lua    — Shared Lua Runtime Backend
+--   14. agent.lua            — Agent-Orchestrator
+--   15. smart_lua_ide/       — first-class frontend, loaded directly
 --       └ ide_storage.lua    — backend bridge for IDE persistence
---       └ code_executor.lua  — Legacy-Shim zu core_executor
+--       └ code_executor.lua  — legacy shim to core_executor
 --       └ ide_asset_picker.lua
 --       └ ide_file_manager.lua
 --       └ ide_gui.lua
---    8. main_gui.lua         — Haupt-UI (Chat + Agent-Panel)
---    9. config_gui.lua       — Einstellungs-GUI (inkl. Kontext-Layer-Picker)
+--   15. main_gui.lua         — main UI (chat + agent panel)
+--   16. config_gui.lua       — settings UI including context-layer picker
 --   10. on_mods_loaded:
---       └ registry.discover_external() → externe Addon-Mods einbinden
+--       └ registry.discover_external() → load external addon mods
 --   11. Main GUI and config GUI
---   12. Formspec-Handler registrieren
---   13. llm_startup.lua laden (falls vorhanden)
+--   12. Register formspec handlers
+--   13. Load llm_startup.lua if present
 --
 -- ===========================================================================
 
 local mod_name = core.get_current_modname()
 local mod_dir  = core.get_modpath(mod_name)
 local IDE_DIR  = mod_dir .. "/smart_lua_ide"
+
+_G.llm_connect = rawget(_G, "llm_connect") or {}
 
 -- Helper: load a file with error handling
 -- fatal=true  → aborts init on error (hard failure)
@@ -104,7 +108,15 @@ core.register_privilege("llm_root", {
 })
 
 -- ===========================================================================
--- 3. LLM API
+-- 3. Optional raw prompt/response trace logger
+-- ===========================================================================
+
+local prompt_trace = load_module(mod_dir .. "/prompt_trace.lua", "prompt_trace", false)
+_G.llm_connect.prompt_trace = prompt_trace
+_G.prompt_trace = prompt_trace
+
+-- ===========================================================================
+-- 4. LLM API
 -- ===========================================================================
 
 local llm_api = load_module(mod_dir .. "/llm_api.lua", "llm_api", true)
@@ -135,11 +147,21 @@ local registry = load_module(mod_dir .. "/registry.lua", "registry", true)
 -- Set global namespace: _G.llm_connect.registry ready for external mods
 registry.expose_global()
 
--- Load internal addons immediately (addons/ except smart_lua_ide)
+-- ===========================================================================
+-- 7. Context registry — Lua-native agent self-context retrieval
+-- ===========================================================================
+
+local context_registry = load_module(mod_dir .. "/context_registry.lua", "context_registry", true)
+_G.llm_connect.context_registry = context_registry
+_G.llm_connect.context = context_registry
+_G.context_registry = context_registry
+
+-- Load internal skills after the context layer exists, so skills may register
+-- on-demand documentation sections without bloating the system prompt.
 registry.load_internal()
 
 -- ===========================================================================
--- 7. Execution policy
+-- 8. Execution policy
 -- ===========================================================================
 
 local execution_policy = load_module(mod_dir .. "/execution_policy.lua", "execution_policy", true)
@@ -158,6 +180,10 @@ _G.path_policy = path_policy
 -- ===========================================================================
 -- 9. IDE persistence / hot-reload backends
 -- ===========================================================================
+
+local storage_backends = load_module(mod_dir .. "/storage_backends.lua", "storage_backends", true)
+_G.llm_connect.storage_backends = storage_backends
+_G.storage_backends = storage_backends
 
 local runtime_scripts = load_module(mod_dir .. "/runtime_scripts.lua", "runtime_scripts", true)
 _G.llm_connect.runtime_scripts = runtime_scripts
@@ -228,6 +254,7 @@ _G.runtime_scripts = runtime_scripts -- used by IDE/core_executor
 _G.trusted_mods = trusted_mods    -- optional root-only trusted worldmod backend
 _G.core_executor = core_executor  -- shared IDE/Agent/Skill runtime
 _G.basic_context = basic_context  -- used by agent.lua
+_G.context_registry = context_registry -- used by agent/core_executor/skills
 _G.main_gui      = main_gui       -- used by config_gui close, ide_gui close
 _G.config_gui    = config_gui     -- used by main_gui open_config button
 
@@ -282,7 +309,7 @@ core.register_chatcommand("llm_config_reload", {
     end,
 })
 
--- Startup-Code manuell neu laden (llm_root)
+-- Manually reload startup code (llm_root)
 local startup_file = (_G.llm_connect and _G.llm_connect.path_policy and _G.llm_connect.path_policy.startup_file()) or (core.get_worldpath() .. "/llm_startup.lua")
 
 core.register_chatcommand("llm_startup_reload", {

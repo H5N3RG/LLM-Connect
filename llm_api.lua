@@ -202,11 +202,6 @@ function M.request(messages, callback, options)
         stream            = options.stream == true,
     }
 
-    if options.tools then
-        body_table.tools       = options.tools
-        body_table.tool_choice = options.tool_choice or "auto"
-    end
-
     local max_t = body_table.max_tokens
     if cfg.max_tokens_integer then
         body_table.max_tokens = math.floor(max_t)
@@ -218,6 +213,19 @@ function M.request(messages, callback, options)
 
     if cfg.max_tokens_integer then
         body = body:gsub('"max_tokens"%s*:%s*(%d+)%.0', '"max_tokens": %1')
+    end
+
+    local trace = rawget(_G, "llm_connect") and _G.llm_connect.prompt_trace or rawget(_G, "prompt_trace")
+    local trace_meta = {
+        mode = tostring(options.mode or "unknown"),
+        model = tostring(body_table.model or ""),
+        api_url = tostring(cfg.api_url or ""),
+        message_count = tostring(type(messages) == "table" and #messages or 0),
+        stream = tostring(body_table.stream == true),
+        timeout = tostring(options.timeout or cfg.timeout),
+    }
+    if trace and trace.log_request then
+        pcall(trace.log_request, trace_meta, body_table, body)
     end
 
     if core.settings:get_bool("llm_debug") then
@@ -248,6 +256,16 @@ function M.request(messages, callback, options)
                     err = raw
                 end
             end
+            if trace and trace.log_error_response then
+                pcall(trace.log_error_response, trace_meta, {
+                    succeeded = result.succeeded,
+                    timeout = result.timeout,
+                    code = result.code,
+                    error = result.error,
+                    data = result.data,
+                    normalized_error = err,
+                })
+            end
             callback({ success = false, error = err, code = result.code })
             return
         end
@@ -260,6 +278,15 @@ function M.request(messages, callback, options)
         end
 
         local response = core.parse_json(result.data)
+        if trace and trace.log_response then
+            pcall(trace.log_response, trace_meta, {
+                succeeded = result.succeeded,
+                timeout = result.timeout,
+                code = result.code,
+                error = result.error,
+                data = raw_data,
+            }, response)
+        end
         if not response or type(response) ~= "table" then
             callback({ success = false,
                 error = "Invalid JSON response: " .. raw_data:sub(1, 120) })
@@ -292,11 +319,6 @@ function M.request(messages, callback, options)
                             and response.choices[1].finish_reason,
             usage         = response.usage,
         }
-
-        if response.choices and response.choices[1]
-                             and response.choices[1].message.tool_calls then
-            ret.tool_calls = response.choices[1].message.tool_calls
-        end
 
         if core.settings:get_bool("llm_debug") then
             core.log("action", "[llm_api DEBUG] Raw: " .. tostring(result.data or "no data"))

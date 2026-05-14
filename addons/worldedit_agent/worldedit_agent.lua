@@ -22,16 +22,101 @@
 -- Helpers
 -- ===========================================================================
 
+local NODE_ALIASES = {
+    -- Common LLM hallucinations / Minecraft-ish names mapped to Minetest Game nodes.
+    -- Targets are validated at runtime, so harmless if a game lacks them.
+    ["default:oak_log"]       = "default:tree",
+    ["default:oak_tree"]      = "default:tree",
+    ["default:oak_wood"]      = "default:wood",
+    ["default:oak_planks"]    = "default:wood",
+    ["default:wooden_planks"] = "default:wood",
+    ["default:planks"]        = "default:wood",
+    ["default:log"]           = "default:tree",
+    ["default:glass_pane"]    = "default:glass",
+    ["default:window"]        = "default:glass",
+    ["default:cobblestone"]   = "default:cobble",
+    ["default:grass"]         = "default:dirt_with_grass",
+    ["minecraft:oak_log"]     = "default:tree",
+    ["minecraft:oak_planks"]  = "default:wood",
+    ["minecraft:glass"]       = "default:glass",
+    ["minecraft:cobblestone"] = "default:cobble",
+}
+
+local function registered_node(name)
+    return type(name) == "string" and core.registered_nodes and core.registered_nodes[name]
+end
+
+local function resolve_registered_alias(name)
+    local aliases = rawget(core, "registered_aliases")
+    local target = type(aliases) == "table" and aliases[name]
+    if registered_node(target) then return target end
+    return nil
+end
+
 local function resolve_node(node_str)
     if not node_str or node_str == "" then return nil, "node name is empty" end
-    if node_str == "air" then return "air", nil end
-    if core.registered_nodes[node_str] then return node_str, nil end
-    local with_source = node_str .. "_source"
-    if core.registered_nodes[with_source] then return with_source, nil end
-    local base = node_str:gsub("_flowing$", "_source")
-    if core.registered_nodes[base] then return base, nil end
-    core.log("warning", ("[worldedit_agent] unknown node '%s' — passing through"):format(node_str))
-    return node_str, nil
+
+    local original = tostring(node_str)
+    local node = original:lower():gsub("^%s+", ""):gsub("%s+$", "")
+    if node == "" then return nil, "node name is empty" end
+    if node == "air" then return "air", nil end
+
+    local candidates = { node }
+    if not node:find(":", 1, true) then
+        table.insert(candidates, "default:" .. node)
+    end
+    table.insert(candidates, node .. "_source")
+    table.insert(candidates, node:gsub("_flowing$", "_source"))
+
+    local direct_alias = NODE_ALIASES[node]
+    if direct_alias then table.insert(candidates, 1, direct_alias) end
+
+    -- Heuristic fallbacks for model-generated material names.
+    if node:find("oak", 1, true) and (node:find("log", 1, true) or node:find("trunk", 1, true)) then
+        table.insert(candidates, "default:tree")
+    end
+    if node:find("plank", 1, true) or node:find("wood", 1, true) then
+        table.insert(candidates, "default:wood")
+    end
+    if node:find("window", 1, true) or node:find("glass", 1, true) then
+        table.insert(candidates, "default:glass")
+    end
+    if node:find("cobble", 1, true) or node:find("cobblestone", 1, true) then
+        table.insert(candidates, "default:cobble")
+    end
+
+    local seen = {}
+    for _, candidate in ipairs(candidates) do
+        if candidate and not seen[candidate] then
+            seen[candidate] = true
+            if registered_node(candidate) then
+                if candidate ~= original then
+                    core.log("action", ("[worldedit_agent] resolved node '%s' -> '%s'"):format(original, candidate))
+                end
+                return candidate, nil
+            end
+            local aliased = resolve_registered_alias(candidate)
+            if aliased then
+                core.log("action", ("[worldedit_agent] resolved alias '%s' -> '%s'"):format(original, aliased))
+                return aliased, nil
+            end
+        end
+    end
+
+    core.log("warning", ("[worldedit_agent] unknown node '%s' — rejected before WorldEdit call"):format(original))
+    return nil, "unknown node '" .. original .. "' (use a registered node such as default:stone, default:wood, default:tree, default:glass, default:cobble or air)"
+end
+
+local function call_worldedit(label, fn, ...)
+    if type(fn) ~= "function" then
+        return nil, label .. ": WorldEdit function unavailable"
+    end
+    local result = { pcall(fn, ...) }
+    local ok = table.remove(result, 1)
+    if not ok then
+        return nil, label .. ": " .. tostring(result[1])
+    end
+    return unpack(result)
 end
 
 local function make_pos(args, player_name)
@@ -103,7 +188,13 @@ local function sample_environment(pos, radius, step)
 end
 
 local function get_context(player_name)
-    if not worldedit then return "WorldEdit: not loaded" end
+    if type(worldedit) ~= "table" then
+        local modpath = core.get_modpath and core.get_modpath("worldedit") or nil
+        if modpath then
+            return "WorldEdit: installed at " .. tostring(modpath) .. ", but the global Lua API table is not available yet. The worldedit_agent skill cannot run until the API table exists."
+        end
+        return "WorldEdit: not installed or not loaded (core.get_modpath('worldedit') returned nil)"
+    end
 
     local player = core.get_player_by_name(player_name)
     if not player then return "WorldEdit context: player not found" end
@@ -177,10 +268,10 @@ local function restore_hook(player_name, snap)
 end
 
 -- ===========================================================================
--- Dispatchers
+-- Tool runner
 -- ===========================================================================
 
-local function dispatch(tool_name, args, player_name)
+local function run_tool(tool_name, args, player_name)
     tool_name = tostring(tool_name or "")
     if type(args) ~= "table" then args = {} end
     if type(player_name) ~= "string" or player_name == "" then
@@ -220,13 +311,15 @@ local function dispatch(tool_name, args, player_name)
         if err then return {ok=false, message=err} end
         local node, nerr = resolve_node(tostring(args.node or "air"))
         if not node then return {ok=false, message="set_region: " .. nerr} end
-        local count = worldedit.set(p1, p2, node)
+        local count, call_err = call_worldedit("set_region", worldedit.set, p1, p2, node)
+        if call_err then return {ok=false, message=call_err} end
         return {ok=true, message=string.format("Set %d nodes to %s", count or 0, node), data={nodes=count}}
 
     elseif tool_name == "clear_region" then
         local p1, p2, err = require_selection(player_name)
         if err then return {ok=false, message=err} end
-        local count = worldedit.set(p1, p2, "air")
+        local count, call_err = call_worldedit("clear_region", worldedit.set, p1, p2, "air")
+        if call_err then return {ok=false, message=call_err} end
         return {ok=true, message=string.format("Cleared %d nodes", count or 0), data={nodes=count}}
 
     elseif tool_name == "replace" then
@@ -236,7 +329,8 @@ local function dispatch(tool_name, args, player_name)
         local replace_, e2 = resolve_node(tostring(args.replace_node or "air"))
         if not search   then return {ok=false, message="replace: search: "  .. (e1 or "?")} end
         if not replace_ then return {ok=false, message="replace: replace: " .. (e2 or "?")} end
-        local count = worldedit.replace(p1, p2, search, replace_)
+        local count, call_err = call_worldedit("replace", worldedit.replace, p1, p2, search, replace_)
+        if call_err then return {ok=false, message=call_err} end
         return {ok=true, message=string.format("Replaced %d nodes: %s → %s", count or 0, search, replace_)}
 
     elseif tool_name == "copy" then
@@ -246,7 +340,8 @@ local function dispatch(tool_name, args, player_name)
         local amount = tonumber(args.amount or 1)
         local ok, aerr = validate_axis(axis)
         if not ok then return {ok=false, message="copy: " .. aerr} end
-        local count = worldedit.copy(p1, p2, axis, amount)
+        local count, call_err = call_worldedit("copy", worldedit.copy, p1, p2, axis, amount)
+        if call_err then return {ok=false, message=call_err} end
         return {ok=true, message=string.format("Copied %d nodes along %s by %d", count or 0, axis, amount)}
 
     elseif tool_name == "move" then
@@ -256,7 +351,8 @@ local function dispatch(tool_name, args, player_name)
         local amount = tonumber(args.amount or 1)
         local ok, aerr = validate_axis(axis)
         if not ok then return {ok=false, message="move: " .. aerr} end
-        local count, newp1, newp2 = worldedit.move(p1, p2, axis, amount)
+        local count, newp1, newp2 = call_worldedit("move", worldedit.move, p1, p2, axis, amount)
+        if count == nil and type(newp1) == "string" then return {ok=false, message=newp1} end
         if newp1 then worldedit.pos1[player_name] = newp1 end
         if newp2 then worldedit.pos2[player_name] = newp2 end
         return {ok=true, message=string.format("Moved %d nodes along %s by %d", count or 0, axis, amount)}
@@ -268,7 +364,8 @@ local function dispatch(tool_name, args, player_name)
         local count = tonumber(args.count or 1)
         local ok, aerr = validate_axis(axis)
         if not ok then return {ok=false, message="stack: " .. aerr} end
-        local nodes = worldedit.stack(p1, p2, axis, count)
+        local nodes, call_err = call_worldedit("stack", worldedit.stack, p1, p2, axis, count)
+        if call_err then return {ok=false, message=call_err} end
         return {ok=true, message=string.format("Stacked %d times along %s (%d nodes)", count, axis, nodes or 0)}
 
     elseif tool_name == "flip" then
@@ -277,7 +374,8 @@ local function dispatch(tool_name, args, player_name)
         local axis = tostring(args.axis or "y")
         local ok, aerr = validate_axis(axis)
         if not ok then return {ok=false, message="flip: " .. aerr} end
-        local count = worldedit.flip(p1, p2, axis)
+        local count, call_err = call_worldedit("flip", worldedit.flip, p1, p2, axis)
+        if call_err then return {ok=false, message=call_err} end
         return {ok=true, message=string.format("Flipped along %s (%d nodes)", axis, count or 0)}
 
     elseif tool_name == "rotate" then
@@ -290,7 +388,8 @@ local function dispatch(tool_name, args, player_name)
         if not ({[90]=1,[180]=1,[270]=1,[-90]=1})[angle] then
             return {ok=false, message="rotate: angle must be 90, 180, 270 or -90"}
         end
-        local count, newp1, newp2 = worldedit.rotate(p1, p2, axis, angle)
+        local count, newp1, newp2 = call_worldedit("rotate", worldedit.rotate, p1, p2, axis, angle)
+        if count == nil and type(newp1) == "string" then return {ok=false, message=newp1} end
         if newp1 then worldedit.pos1[player_name] = newp1 end
         if newp2 then worldedit.pos2[player_name] = newp2 end
         return {ok=true, message=string.format("Rotated %d° around %s (%d nodes)", angle, axis, count or 0)}
@@ -304,7 +403,8 @@ local function dispatch(tool_name, args, player_name)
         if not node then return {ok=false, message="sphere: " .. nerr} end
         local hollow = args.hollow == true or args.hollow == "true"
         if radius < 1 or radius > 64 then return {ok=false, message="sphere: radius must be 1–64"} end
-        local count = worldedit.sphere(pos, radius, node, hollow)
+        local count, call_err = call_worldedit("sphere", worldedit.sphere, pos, radius, node, hollow)
+        if call_err then return {ok=false, message=call_err} end
         return {ok=true, message=string.format("Sphere r=%d %s at (%d,%d,%d): %d nodes",
             radius, node, pos.x, pos.y, pos.z, count or 0)}
 
@@ -315,8 +415,9 @@ local function dispatch(tool_name, args, player_name)
         if not node then return {ok=false, message="dome: " .. nerr} end
         local hollow = args.hollow == true or args.hollow == "true"
         if radius < 1 or radius > 64 then return {ok=false, message="dome: radius must be 1–64"} end
-        local count = worldedit.dome and worldedit.dome(pos, radius, node, hollow)
-            or worldedit.sphere(pos, radius, node, hollow)  -- fallback if dome not available
+        local primitive = worldedit.dome or worldedit.sphere  -- fallback if dome not available
+        local count, call_err = call_worldedit("dome", primitive, pos, radius, node, hollow)
+        if call_err then return {ok=false, message=call_err} end
         return {ok=true, message=string.format("Dome r=%d %s at (%d,%d,%d): %d nodes",
             radius, node, pos.x, pos.y, pos.z, count or 0)}
 
@@ -333,7 +434,8 @@ local function dispatch(tool_name, args, player_name)
         if not ok then return {ok=false, message="cylinder: " .. aerr} end
         if length < 1 or length > 128 then return {ok=false, message="cylinder: length must be 1–128"} end
         if r1 < 1 or r1 > 64 then return {ok=false, message="cylinder: radius must be 1–64"} end
-        local count = worldedit.cylinder(pos, axis, length, r1, r2, node, hollow)
+        local count, call_err = call_worldedit("cylinder", worldedit.cylinder, pos, axis, length, r1, r2, node, hollow)
+        if call_err then return {ok=false, message=call_err} end
         return {ok=true, message=string.format("Cylinder axis=%s len=%d r=%d %s at (%d,%d,%d): %d nodes",
             axis, length, r1, node, pos.x, pos.y, pos.z, count or 0)}
 
@@ -347,7 +449,8 @@ local function dispatch(tool_name, args, player_name)
         local ok, aerr = validate_axis(axis)
         if not ok then return {ok=false, message="pyramid: " .. aerr} end
         if height < 1 or height > 64 then return {ok=false, message="pyramid: height must be 1–64"} end
-        local count = worldedit.pyramid(pos, axis, height, node, hollow)
+        local count, call_err = call_worldedit("pyramid", worldedit.pyramid, pos, axis, height, node, hollow)
+        if call_err then return {ok=false, message=call_err} end
         return {ok=true, message=string.format("Pyramid axis=%s h=%d %s at (%d,%d,%d): %d nodes",
             axis, height, node, pos.x, pos.y, pos.z, count or 0)}
 
@@ -362,15 +465,16 @@ local function dispatch(tool_name, args, player_name)
         if w < 1 or h < 1 or l < 1 or w > 128 or h > 128 or l > 128 then
             return {ok=false, message="cube: dimensions must be 1–128"}
         end
-        -- worldedit.cube may not exist in all versions — use set_region as fallback
-        local count
+        -- worldedit.cube may not exist in all versions — use set_region as fallback.
+        local count, call_err
         if worldedit.cube then
-            count = worldedit.cube(pos, w, h, l, node, hollow)
+            count, call_err = call_worldedit("cube", worldedit.cube, pos, w, h, l, node, hollow)
         else
             local p1 = {x=pos.x, y=pos.y, z=pos.z}
             local p2 = {x=pos.x+w-1, y=pos.y+h-1, z=pos.z+l-1}
-            count = worldedit.set(p1, p2, node)
+            count, call_err = call_worldedit("cube/set fallback", worldedit.set, p1, p2, node)
         end
+        if call_err then return {ok=false, message=call_err} end
         return {ok=true, message=string.format("Cube %dx%dx%d %s at (%d,%d,%d): %d nodes",
             w, h, l, node, pos.x, pos.y, pos.z, count or 0)}
 
@@ -558,23 +662,47 @@ local function do_register()
     root.skills.worldedit_agent = {
         run = function(a, b, c)
             local tool_name, args, player_name = normalize_run_args(a, b, c)
-            return dispatch(tool_name, args or {}, player_name)
+            return run_tool(tool_name, args or {}, player_name)
         end,
         get_context = get_context,
         snapshot = snapshot_hook,
         restore = restore_hook,
     }
 
-    local api = {
-        "Preferred call form: llm_connect.skills.worldedit_agent.run('tool_name', {arg=value}, player_name)",
-        "Do not omit player_name. Do not pass player_name as the first argument.",
-        "llm_connect.skills.worldedit_agent.run('set_pos1', {x=0,y=0,z=0}, player_name)",
-        "llm_connect.skills.worldedit_agent.run('set_pos2', {x=10,y=10,z=10}, player_name)",
-        "llm_connect.skills.worldedit_agent.run('set_region', {node='default:stone'}, player_name)",
-        "llm_connect.skills.worldedit_agent.run('clear_region', {}, player_name)",
-        "llm_connect.skills.worldedit_agent.run('cube', {width=5,height=3,length=5,node='default:stone',hollow=false}, player_name)",
-        "llm_connect.skills.worldedit_agent.run('sphere', {radius=4,node='default:glass',hollow=true}, player_name)",
-    }
+
+    if root.context and type(root.context.register_section) == "function" then
+        root.context.register_section({
+            id = "skills.worldedit_agent",
+            title = "WorldEdit Agent skill manual",
+            summary = "Selections, region operations, primitives, and safe node/material usage.",
+            tags = {"skill", "worldedit", "building", "nodes", "regions"},
+            required_priv = "llm_agent",
+            provider = function(player_name)
+                return table.concat({
+                    get_context(player_name),
+                    "",
+                    "Preferred call form:",
+                    "  llm_connect.skills.worldedit_agent.run('tool_name', {arg=value}, player_name)",
+                    "Do not omit player_name. Do not pass player_name as the first argument.",
+                    "",
+                    "Common calls:",
+                    "  llm_connect.skills.worldedit_agent.run('set_pos1', {x=0,y=0,z=0}, player_name)",
+                    "  llm_connect.skills.worldedit_agent.run('set_pos2', {x=10,y=10,z=10}, player_name)",
+                    "  llm_connect.skills.worldedit_agent.run('set_region', {node='default:stone'}, player_name)",
+                    "  llm_connect.skills.worldedit_agent.run('clear_region', {}, player_name)",
+                    "  llm_connect.skills.worldedit_agent.run('cube', {width=5,height=3,length=5,node='default:stone',hollow=false}, player_name)",
+                    "  llm_connect.skills.worldedit_agent.run('sphere', {radius=4,node='default:glass',hollow=true}, player_name)",
+                    "",
+                    "Safe common materials:",
+                    "  default:stone, default:cobble, default:wood, default:tree, default:glass, default:brick, default:dirt_with_grass, air",
+                    "Node resolver accepts common aliases like default:oak_log -> default:tree and default:oak_planks -> default:wood.",
+                    "Unknown nodes are rejected before WorldEdit to prevent runtime crashes.",
+                    "For unfamiliar materials, query llm_connect.context.get_section('luanti.registered_nodes.preview', {query='wood'}).",
+                }, "\n")
+            end,
+        })
+    end
+
 
     root.registry.register_skill({
         id          = "worldedit_agent",
@@ -584,12 +712,13 @@ local function do_register()
         required_priv = "llm_agent",
         default_enabled = false,
         available = function()
-            return type(worldedit) == "table"
-                and (type(worldedit.set) == "function"
-                     or type(worldedit.set_node) == "function"
-                     or next(worldedit) ~= nil)
+            local we = rawget(_G, "worldedit")
+            return type(we) == "table"
+                and (type(we.set) == "function"
+                     or type(we.set_node) == "function"
+                     or next(we) ~= nil)
         end,
-        api = api,
+        context_section = "skills.worldedit_agent",
         get_context = get_context,
         snapshot_hook = snapshot_hook,
         restore_hook  = restore_hook,

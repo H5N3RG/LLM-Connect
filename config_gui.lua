@@ -194,6 +194,16 @@ local function build_tab_api(fs, cfg)
     table.insert(fs, "tooltip[chat_system_prompt;Prepended as system message in plain chat (not agent mode). Basic context is always added separately. Example: You are a friendly Luanti helper. Be concise.]")
     y = y + FIELD_H + PAD
 
+    y = sep(fs, y, "Debug / trace")
+
+    local trace_enabled = core.settings:get_bool("llm_trace_prompt_log", false)
+    table.insert(fs, string.format("checkbox[%.2f,%.2f;trace_prompt_log;%s;%s]",
+        PAD, y,
+        core.formspec_escape("Trace raw LLM request/response payloads to world files"),
+        trace_enabled and "true" or "false"))
+    table.insert(fs, "tooltip[trace_prompt_log;Writes full request bodies and raw provider responses to llm_user_prompt_log.txt and llm_response_prompt_log.txt in the world directory. Very verbose; do not leave enabled on public servers. Authorization headers are not logged.]")
+    y = y + CB_H + PAD
+
     y = sep(fs, y, "Timeouts")
 
     -- Global timeout
@@ -257,7 +267,7 @@ local function build_tab_agent(fs)
 
     y = sep(fs, y, "Loop control")
 
-    -- Max iterations + Snapshot
+    -- Max iterations
     table.insert(fs, string.format("label[%.2f,%.2f;Max iterations per run (1–32):]", PAD, y))
     y = y + 0.45
     local max_iter = tostring(tonumber(core.settings:get("llm_agent_max_iterations")) or 8)
@@ -266,45 +276,6 @@ local function build_tab_agent(fs)
         PAD, y, HALF_W, FIELD_H, max_iter))
     table.insert(fs, "style[agent_max_iter;bgcolor=#1e1e1e]")
     table.insert(fs, "tooltip[agent_max_iter;The agent stops after this many LLM calls even if done=false. Safety cap.]")
-    y = y + FIELD_H + PAD
-
-    local snapshot_on = core.settings:get_bool("llm_agent_snapshot", true)
-    table.insert(fs, string.format("checkbox[%.2f,%.2f;agent_snapshot;Take world snapshot before each run (enables Undo);%s]",
-        PAD, y, snapshot_on and "true" or "false"))
-    table.insert(fs, "tooltip[agent_snapshot;Saves the affected region before the agent acts. Required for agent-level Undo to work.]")
-    y = y + CB_H + PAD
-
-    y = sep(fs, y, "Security")
-
-    -- Command whitelist
-    table.insert(fs, string.format("label[%.2f,%.2f;Deprecated legacy command whitelist (JSON run_chat_command removed):]", PAD, y))
-    y = y + 0.45
-    local whitelist = core.settings:get("llm_agent_command_whitelist") or ""
-    table.insert(fs, string.format(
-        "field[%.2f,%.2f;%.2f,%.2f;agent_cmd_whitelist;;%s]",
-        PAD, y, W - PAD*2, FIELD_H,
-        core.formspec_escape(whitelist)))
-    table.insert(fs, "style[agent_cmd_whitelist;bgcolor=#1e1e1e]")
-    table.insert(fs, "tooltip[agent_cmd_whitelist;Comma-separated command names the agent may call. Example: teleport,give,time\nLeave empty to allow any command the player is already privileged to run.\nRecommended: restrict on public servers.]")
-    y = y + FIELD_H + PAD
-
-    y = sep(fs, y, "Legacy addon defaults (deprecated)")
-
-    local addons_default_on = core.settings:get_bool("llm_agent_addons_default_on", false)
-    table.insert(fs, string.format(
-        "checkbox[%.2f,%.2f;agent_addons_default_on;Legacy addons active by default (deprecated);%s]",
-        PAD, y, addons_default_on and "true" or "false"))
-    table.insert(fs, "tooltip[agent_addons_default_on;When off (default), players must explicitly enable addons in the Addons panel. When on, all addons are active unless the player disables them.]")
-    y = y + CB_H + PAD * 0.5
-    table.insert(fs, string.format("label[%.2f,%.2f;Legacy addon IDs enabled by default (deprecated):]", PAD, y))
-    y = y + 0.45
-    local addons_enabled = core.settings:get("llm_agent_addons_enabled") or ""
-    table.insert(fs, string.format(
-        "field[%.2f,%.2f;%.2f,%.2f;agent_addons_enabled;;%s]",
-        PAD, y, W - PAD*2, FIELD_H,
-        core.formspec_escape(addons_enabled)))
-    table.insert(fs, "style[agent_addons_enabled;bgcolor=#1e1e1e]")
-    table.insert(fs, "tooltip[agent_addons_enabled;Comma-separated addon IDs. Example: worldedit_agent,mobs_redo\nLeave empty to enable all registered addons by default.\nPer-player overrides set in the Addons panel always take precedence.]")
     y = y + FIELD_H + PAD
 
     -- Status info box
@@ -425,22 +396,6 @@ function M.handle_fields(name, formname, fields)
         return true
     end
 
-    -- ── Agent addons default toggle (instant) ────────────────
-    if fields.agent_addons_default_on ~= nil then
-        local val = fields.agent_addons_default_on == "true"
-        core.settings:set_bool("llm_agent_addons_default_on", val)
-        M.show(name, "agent")
-        return true
-    end
-
-    -- ── Agent snapshot toggle (instant) ──────────────────────
-    if fields.agent_snapshot ~= nil then
-        local val = fields.agent_snapshot == "true"
-        core.settings:set_bool("llm_agent_snapshot", val)
-        M.show(name, "agent")
-        return true
-    end
-
     -- ── Save ─────────────────────────────────────────────────
     if fields.save then
         if tab == "api" then
@@ -485,9 +440,12 @@ function M.handle_fields(name, formname, fields)
                 timeout_agent = timeout_agent,
             })
 
-            -- Chat system prompt saved directly to settings (not in llm_api.config)
+            -- Chat system prompt and trace toggle are saved directly to settings.
             local csp = (fields.chat_system_prompt or ""):match("^%s*(.-)%s*$")
             core.settings:set("llm_chat_system_prompt", csp)
+            if fields.trace_prompt_log ~= nil then
+                core.settings:set_bool("llm_trace_prompt_log", fields.trace_prompt_log == "true")
+            end
 
             core.chat_send_player(name, "[LLM] ✓ API configuration saved (runtime only)")
             core.log("action", "[llm_connect] API config updated by " .. name)
@@ -502,11 +460,6 @@ function M.handle_fields(name, formname, fields)
 
             core.settings:set("llm_agent_max_iterations",
                 tostring(math.floor(max_iter)))
-            core.settings:set("llm_agent_command_whitelist",
-                (fields.agent_cmd_whitelist or ""):match("^%s*(.-)%s*$"))
-            core.settings:set("llm_agent_addons_enabled",
-                (fields.agent_addons_enabled or ""):match("^%s*(.-)%s*$"))
-
             core.chat_send_player(name, "[LLM] ✓ Agent configuration saved (runtime only)")
             core.log("action", "[llm_connect] agent config updated by " .. name)
         end

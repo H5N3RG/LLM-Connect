@@ -111,23 +111,23 @@ core.register_on_leaveplayer(function(player)
 end)
 
 -- ===========================================================================
--- History renderer — scroll_container mit gestapelten read-only textareas
+-- History renderer — scroll_container with stacked read-only textareas
 --
--- Je Nachricht eine textarea mit name="" (read-only, kein Luanti-Caching).
--- Request (user) und Response (assistant) visuell differenziert.
--- Höhenschätzung: ceil(#text / CHARS_PER_LINE) Zeilen × LINE_H + vertikal PAD.
+-- One textarea per message with name="" (read-only, no Luanti caching).
+-- Request (user) and response (assistant) are visually distinguished.
+-- Height estimate: ceil(#text / CHARS_PER_LINE) lines × LINE_H + vertical padding.
 -- ===========================================================================
 
-local CHAT_W              = 15.5   -- Referenzbreite für die Wrap-Schätzung
-local CHARS_PER_LINE      = 88     -- Zeichen pro Zeile bei CHAT_W
-local LINE_H              = 0.52   -- Höhe einer Textzeile in Formspec-Einheiten
-local MSG_HEADER_H        = 0.44   -- Platz für Sender / Statuszeile
-local MSG_STATUS_H        = 0.34   -- zusätzliche Meta-Zeile für Live-Feedback
-local MSG_TEXT_PAD_B      = 0.12   -- unterer Abstand des Textbereichs
-local MSG_PAD_V           = 0.18   -- zusätzliches vertikales Kartenpadding
-local MSG_GAP             = 0.16   -- Lücke zwischen Nachrichten
-local USER_CARD_INSET     = 1.15   -- User-Karten leicht nach rechts versetzen
-local ASSISTANT_CARD_INSET = 0.10  -- Assistant-Karten fast vollbreit
+local CHAT_W              = 15.5   -- Reference width for the wrap estimate
+local CHARS_PER_LINE      = 88     -- Characters per line at CHAT_W
+local LINE_H              = 0.52   -- Height of one text line in formspec units
+local MSG_HEADER_H        = 0.44   -- Space for sender / status line
+local MSG_STATUS_H        = 0.34   -- Additional meta line for live feedback
+local MSG_TEXT_PAD_B      = 0.12   -- Bottom spacing of the text area
+local MSG_PAD_V           = 0.18   -- Additional vertical card padding
+local MSG_GAP             = 0.16   -- Gap between messages
+local USER_CARD_INSET     = 1.15   -- Shift user cards slightly to the right
+local ASSISTANT_CARD_INSET = 0.10  -- Assistant cards are almost full width
 
 local function estimate_wrapped_lines(text, width)
     if not text or text == "" then return 1 end
@@ -152,11 +152,11 @@ local function estimate_msg_height(msg, card_w)
 end
 
 local function build_chat_history(fs, session, x, y, w, scroll_h)
-    -- scroll_container — Scrollbar rechts davon, außerhalb
+    -- scroll_container — scrollbar to the right, outside the container
     local SCROLLBAR_W = 0.3
     local inner_w     = w - SCROLLBAR_W - 0.1
 
-    -- Gesamthöhe des Inhalts berechnen
+    -- Calculate total content height
     local total_h = MSG_GAP
     local msg_heights = {}
     for _, msg in ipairs(session.history) do
@@ -171,12 +171,22 @@ local function build_chat_history(fs, session, x, y, w, scroll_h)
     end
     total_h = math.max(total_h, scroll_h)
 
-    local scroll_val  = session.chat_scroll or 0
-    table.insert(fs, string.format(
-        "scroll_container[%.2f,%.2f;%.2f,%.2f;chat_scroll;vertical;%.2f]",
-        x, y, inner_w, scroll_h, scroll_val))
+    -- Luanti scroll_container math:
+    --   * the standalone scrollbar stores a value in the 0..1000 range
+    --   * scroll_container's last argument is NOT that value; it is a
+    --     conversion factor from scrollbar units to formspec units
+    -- Therefore the factor must be derived from the virtual overflow height.
+    -- Passing the scrollbar value itself here makes the content jump out of
+    -- view after the first tiny scroll movement.
+    local scroll_val = math.max(0, math.min(1000, tonumber(session.chat_scroll) or 0))
+    local overflow_h = math.max(0, total_h - scroll_h)
+    local scroll_factor = overflow_h / 1000
 
-    -- Style einmalig setzen: transparenter Hintergrund, kein Border
+    table.insert(fs, string.format(
+        "scroll_container[%.2f,%.2f;%.2f,%.2f;chat_scroll;vertical;%.4f]",
+        x, y, inner_w, scroll_h, scroll_factor))
+
+    -- Set style once: transparent background, no border
     table.insert(fs, "style_type[textarea;textcolor=#d0d0d0;bgcolor=#00000000;border=false]")
 
     local cy    = MSG_GAP
@@ -189,27 +199,27 @@ local function build_chat_history(fs, session, x, y, w, scroll_h)
             local content     = msg.content or ""
             local status_line = msg.status_line or ""
 
-            -- Leicht versetzte Karten = chat-artiger statt Log-Fullwidth-Look
+            -- Slightly offset cards = more chat-like than log-style full width
             local lx     = is_user and USER_CARD_INSET or ASSISTANT_CARD_INSET
             local card_w = inner_w - lx
 
-            -- Hintergrundfarbe: User = blau getönt, Assistant = grün getönt
+            -- Background color: user = blue tinted, assistant = green tinted
             local bg_color = is_user and "#142033" or "#101a13"
 
-            -- Hintergrundbox
+            -- Background box
             table.insert(fs, string.format("box[%.2f,%.2f;%.2f,%.2f;%s]",
                 lx, cy, card_w, mh, bg_color))
 
-            -- Linker Akzentbalken: blau für User, grün für Assistant
+            -- Left accent bar: blue for user, green for assistant
             local accent = is_user and "#2e6cff" or "#2f9b52"
             table.insert(fs, string.format("box[%.2f,%.2f;0.06,%.2f;%s]",
                 lx, cy, mh, accent))
 
-            -- Subtiler Header-Streifen für bessere Trennung
+            -- Subtle header strip for clearer separation
             table.insert(fs, string.format("box[%.2f,%.2f;%.2f,0.34;%s]",
                 lx + 0.06, cy, card_w - 0.06, is_user and "#172841" or "#132218"))
 
-            -- Absender-Label oben links
+            -- Sender label in the top-left corner
             local sender_color = is_user and "#9bc0ff" or "#9be2a2"
             local sender_label = is_user and "You" or "LLM"
             table.insert(fs, string.format("label[%.2f,%.2f;%s]",
@@ -225,7 +235,7 @@ local function build_chat_history(fs, session, x, y, w, scroll_h)
                 text_y = text_y + MSG_STATUS_H
             end
 
-            -- Nachrichtentext als read-only textarea (name="" → kein Caching)
+            -- Message text as read-only textarea (name="" → no caching)
             local text_h = math.max(LINE_H, mh - (text_y - cy) - MSG_TEXT_PAD_B)
             table.insert(fs, string.format(
                 "textarea[%.2f,%.2f;%.2f,%.2f;;;%s]",
@@ -236,16 +246,19 @@ local function build_chat_history(fs, session, x, y, w, scroll_h)
         end
     end
 
-    -- Leerer Platzhalter wenn keine History
+    -- Empty placeholder when there is no history
     if msg_i == 0 then
         table.insert(fs, string.format("label[%.2f,%.2f;%s]",
             0.3, 0.4,
-            core.colorize("#444444", "Noch keine Nachrichten — schreib etwas!")))
+            core.colorize("#444444", "No messages yet — write something!")))
     end
 
     table.insert(fs, "scroll_container_end[]")
 
-    -- Scrollbar außerhalb des containers
+    -- Scrollbar outside the container. Keep the value range stable; the
+    -- scroll_container factor above maps this 0..1000 range to actual content
+    -- overflow in formspec units.
+    table.insert(fs, "scrollbaroptions[min=0;max=1000;smallstep=25;largestep=120]")
     table.insert(fs, string.format(
         "scrollbar[%.2f,%.2f;%.2f,%.2f;vertical;chat_scroll;%.2f]",
         x + inner_w + 0.1, y, SCROLLBAR_W, scroll_h, scroll_val))
@@ -453,7 +466,7 @@ function M.show_skills(name)
     local y = HDR_H + PAD
 
     -- ── Info row ─────────────────────────────────────────────
-    table.insert(fs, string.format("label[%.2f,%.2f;Toggle Lua-first skills for this session. Greyed = unavailable or missing privilege. JSON addons are deprecated.]",
+    table.insert(fs, string.format("label[%.2f,%.2f;Toggle Lua-first skills for this session. Greyed = unavailable or missing privilege.]",
         PAD, y + 0.05))
     y = y + INFO_H
 
@@ -642,11 +655,12 @@ local function do_send(name, input, session)
     local use_agent = can_agent(name) and agent ~= nil and active_skill_count > 0
 
     if use_agent then
-        table.insert(session.history, { role = "user", content = input })
+        table.insert(session.history, { role = "user", content = input, mode = "agent" })
         table.insert(session.history, {
             role = "assistant",
             content = "…",
             status_line = "Preparing action-aware chat…",
+            mode = "agent",
         })
         maybe_scroll_to_bottom(session)
         M.show(name)
@@ -707,10 +721,16 @@ local function do_send(name, input, session)
 
         local start = math.max(1, #session.history - max_h + 1)
         for i = start, #session.history do
-            table.insert(messages, session.history[i])
+            local msg = session.history[i]
+            -- Keep the request history mode-clean. The UI may show both plain
+            -- chat and agent turns, but the plain chat API request must not
+            -- inherit previous action-aware/tool-runtime turns.
+            if msg and (msg.mode == nil or msg.mode == "chat") then
+                table.insert(messages, { role = msg.role, content = msg.content })
+            end
         end
 
-        table.insert(session.history, { role = "user", content = input })
+        table.insert(session.history, { role = "user", content = input, mode = "chat" })
         table.insert(messages,        { role = "user", content = input })
 
         local sys_prompt = core.settings:get("llm_chat_system_prompt") or ""
@@ -720,15 +740,20 @@ local function do_send(name, input, session)
         end
 
         local basic_ctx = _G.basic_context
-        if basic_ctx and basic_ctx.get then
-            local ctx = basic_ctx.get(name)
-            if ctx and ctx ~= "" then
-                local pos = (sys_prompt ~= "") and 2 or 1
-                table.insert(messages, pos, { role = "system", content = ctx })
+        if basic_ctx then
+            local ctx_fn = basic_ctx.get_chat or basic_ctx.get
+            if type(ctx_fn) == "function" then
+                local ok, ctx = pcall(ctx_fn, name)
+                if ok and ctx and ctx ~= "" then
+                    local pos = (sys_prompt ~= "") and 2 or 1
+                    table.insert(messages, pos, { role = "system", content = ctx })
+                elseif not ok then
+                    core.log("warning", "[main_gui] chat context failed: " .. tostring(ctx))
+                end
             end
         end
 
-        table.insert(session.history, { role = "assistant", content = "…" })
+        table.insert(session.history, { role = "assistant", content = "…", mode = "chat" })
         maybe_scroll_to_bottom(session)
         M.show(name)
 

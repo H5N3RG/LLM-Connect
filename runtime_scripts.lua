@@ -18,6 +18,7 @@ M.version = "1.1.0-dev"
 M.backend_name = "llm_runtime"
 
 local path_policy = (_G.llm_connect and _G.llm_connect.path_policy) or _G.path_policy
+local storage_fs = (_G.llm_connect and _G.llm_connect.storage_backends) or _G.storage_backends
 local WORLD_DIR = path_policy and path_policy.world_path or core.get_worldpath()
 local BASE_DIR = path_policy and path_policy.runtime_scripts_dir() or (WORLD_DIR .. DIR_DELIM .. "llm_scripts")
 local ENABLED_INDEX = (path_policy and path_policy.join(BASE_DIR, "_enabled.txt")) or (BASE_DIR .. DIR_DELIM .. "_enabled.txt")
@@ -346,20 +347,42 @@ end
 
 local function collect_files(base, rel, out)
     out = out or {}
+    if storage_fs and storage_fs.collect_files then
+        local files, diagnostics = storage_fs.collect_files({
+            base = base,
+            rel = rel or "",
+            out = out,
+            label = "runtime_scripts",
+            skip = { ["_index.txt"] = true },
+        })
+        M.last_fs_diagnostics = diagnostics
+        return files
+    end
+    -- Fallback for very old load orders; intentionally pcalled to avoid
+    -- phantom-empty filemanager states caused by raw get_dir_list failures.
     rel = rel or ""
     local dir = rel == "" and base or (base .. DIR_DELIM .. rel:gsub("/", DIR_DELIM))
     if core.get_dir_list then
-        for _, name in ipairs(core.get_dir_list(dir, false) or {}) do
-            if name ~= "_index.txt" then
-                out[#out + 1] = rel == "" and name or (rel .. "/" .. name)
+        local ok_files, files = pcall(core.get_dir_list, dir, false)
+        if ok_files then
+            table.sort(files or {})
+            for _, name in ipairs(files or {}) do
+                if name ~= "_index.txt" then out[#out + 1] = rel == "" and name or (rel .. "/" .. name) end
             end
+        else
+            core.log("warning", "[runtime_scripts] get_dir_list(files) failed for " .. tostring(dir) .. ": " .. tostring(files))
         end
-        for _, name in ipairs(core.get_dir_list(dir, true) or {}) do
-            if name ~= "." and name ~= ".." then
-                collect_files(base, rel == "" and name or (rel .. "/" .. name), out)
+        local ok_dirs, dirs = pcall(core.get_dir_list, dir, true)
+        if ok_dirs then
+            table.sort(dirs or {})
+            for _, name in ipairs(dirs or {}) do
+                if name ~= "." and name ~= ".." then collect_files(base, rel == "" and name or (rel .. "/" .. name), out) end
             end
+        else
+            core.log("warning", "[runtime_scripts] get_dir_list(dirs) failed for " .. tostring(dir) .. ": " .. tostring(dirs))
         end
     end
+    table.sort(out)
     return out
 end
 
@@ -375,31 +398,39 @@ end
 function M.list_dir(player_name, rel_dir)
     rel_dir = normalize_relpath(rel_dir or "") or ""
     local base = M.get_user_dir(player_name)
-    local dir = rel_dir == "" and base or (base .. DIR_DELIM .. rel_dir:gsub("/", DIR_DELIM))
+    if storage_fs and storage_fs.list_dir then
+        local entries, diagnostics = storage_fs.list_dir({
+            base = base,
+            rel_dir = rel_dir,
+            label = "runtime_scripts",
+            skip = { ["_index.txt"] = true },
+        })
+        M.last_fs_diagnostics = diagnostics
+        return entries
+    end
     local out = {}
     if rel_dir ~= "" then out[#out + 1] = {type = "up", name = "..", path = dirname_rel(rel_dir)} end
-    if core.get_dir_list then
-        for _, name in ipairs(core.get_dir_list(dir, true) or {}) do
-            if name ~= "." and name ~= ".." then
-                out[#out + 1] = {type = "dir", name = name, path = rel_dir == "" and name or (rel_dir .. "/" .. name)}
-            end
-        end
-        for _, name in ipairs(core.get_dir_list(dir, false) or {}) do
-            if name ~= "_index.txt" then
-                out[#out + 1] = {type = "file", name = name, path = rel_dir == "" and name or (rel_dir .. "/" .. name)}
-            end
-        end
-    end
-    table.sort(out, function(a, b)
-        local rank = {up = 0, dir = 1, file = 2}
-        if a.type ~= b.type then return (rank[a.type] or 9) < (rank[b.type] or 9) end
-        return tostring(a.name) < tostring(b.name)
-    end)
     return out
 end
 
 function M.master_entries(player_name)
     M.get_user_dir(player_name)
+    local static = {
+        {name = "runtime", path = "runtime"},
+        {name = "sticky", path = "sticky"},
+        {name = "startup", path = "startup"},
+        {name = "disabled", path = "disabled"},
+    }
+    if storage_fs and storage_fs.master_entries then
+        local entries, diagnostics = storage_fs.master_entries({
+            base = M.get_user_dir(player_name),
+            label = "runtime_scripts",
+            static_dirs = static,
+            include_physical_dirs = false,
+        })
+        M.last_fs_diagnostics = diagnostics
+        return entries
+    end
     return {
         {type = "dir", name = "/", path = ""},
         {type = "dir", name = "runtime", path = "runtime"},

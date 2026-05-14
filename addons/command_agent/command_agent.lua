@@ -120,7 +120,7 @@ local function get_context(player_name)
     }, "\n")
 end
 
-local function dispatch(tool_name, args, player_name)
+local function run_tool(tool_name, args, player_name)
     args = args or {}
 
     if tool_name == "list_chatcommands" then
@@ -140,6 +140,28 @@ root.skills.command_agent = {
     run_chatcommand = function(args, player_name) return run_chatcommand(args or {}, player_name) end,
 }
 
+
+if root.context and type(root.context.register_section) == "function" then
+    root.context.register_section({
+        id = "skills.command_agent",
+        title = "Command Agent skill manual",
+        summary = "Controlled chatcommand discovery and execution API.",
+        tags = {"skill", "command_agent", "chatcommand", "commands"},
+        required_priv = "llm_agent",
+        provider = function(player_name)
+            return table.concat({
+                get_context(player_name),
+                "",
+                "Callable functions:",
+                "  llm_connect.skills.command_agent.list_chatcommands({ only_allowed = true }, player_name)",
+                "  llm_connect.skills.command_agent.run_chatcommand({ command = '/time 6000' }, player_name)",
+                "Use this skill only when there is no more specific direct skill for the task.",
+                "Always include player_name as second argument.",
+            }, "\n")
+        end,
+    })
+end
+
 root.registry.register_skill({
     id = "command_agent",
     label = "Command Agent",
@@ -147,10 +169,7 @@ root.registry.register_skill({
     description = "Lua-first skill for controlled chatcommand discovery and execution.",
     required_priv = "llm_agent",
     default_enabled = false,
-    api = {
-        "llm_connect.skills.command_agent.list_chatcommands({ only_allowed = true }, player_name)",
-        "llm_connect.skills.command_agent.run_chatcommand({ command = '/time 6000' }, player_name)",
-    },
+    context_section = "skills.command_agent",
     get_context = get_context,
     tool_count = 2,
 })

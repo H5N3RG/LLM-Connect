@@ -72,6 +72,15 @@ local function create_safe_llm_connect(player_name, opts)
     if allow_skills then
         proxy.skills = root.skills
         proxy.registry = root.registry
+
+        local context_registry = root.context_registry or root.context
+        if type(context_registry) == "table" then
+            if type(context_registry.make_sandbox_proxy) == "function" then
+                proxy.context = context_registry.make_sandbox_proxy(player_name)
+            else
+                proxy.context = context_registry
+            end
+        end
     end
 
     return proxy
@@ -81,8 +90,57 @@ end
 -- Sandbox / Shadow-G
 -- ---------------------------------------------------------------------------
 
+local function validate_pos(pos, fname)
+    if type(pos) ~= "table" then
+        error(("%s: position must be a table {x=number,y=number,z=number}, got %s"):format(fname, type(pos)), 3)
+    end
+    if type(pos.x) ~= "number" or type(pos.y) ~= "number" or type(pos.z) ~= "number" then
+        error(("%s: position must contain numeric x/y/z fields"):format(fname), 3)
+    end
+end
+
+local function validate_node_arg(node, fname)
+    if type(node) == "string" then
+        node = { name = node }
+    end
+    if type(node) ~= "table" then
+        error(("%s: node must be a table {name='mod:node'} or a node name string, got %s"):format(fname, type(node)), 3)
+    end
+    if type(node.name) ~= "string" or node.name == "" then
+        error(("%s: node.name must be a non-empty registered node name string"):format(fname), 3)
+    end
+    if core.registered_nodes and not core.registered_nodes[node.name] then
+        error(("%s: unknown or unavailable node '%s'. Use llm_connect.context.get_section('luanti.registered_nodes.preview', {query='...'}) before placing nodes."):format(fname, node.name), 3)
+    end
+    return node
+end
+
 local function create_safe_core(player_name, opts)
     opts = opts or {}
+
+    local function safe_set_node(pos, node)
+        validate_pos(pos, "core.set_node")
+        node = validate_node_arg(node, "core.set_node")
+        return core.set_node(pos, node)
+    end
+
+    local function safe_add_node(pos, node)
+        validate_pos(pos, "core.add_node")
+        node = validate_node_arg(node, "core.add_node")
+        return core.add_node(pos, node)
+    end
+
+    local function safe_swap_node(pos, node)
+        validate_pos(pos, "core.swap_node")
+        node = validate_node_arg(node, "core.swap_node")
+        return core.swap_node(pos, node)
+    end
+
+    local function safe_remove_node(pos)
+        validate_pos(pos, "core.remove_node")
+        return core.remove_node(pos)
+    end
+
     local safe_core = {
         -- logging / chat
         log                   = core.log,
@@ -92,10 +150,10 @@ local function create_safe_core(player_name, opts)
         -- world reads / controlled writes
         get_node              = core.get_node,
         get_node_or_nil       = core.get_node_or_nil,
-        set_node              = core.set_node,
-        swap_node             = core.swap_node,
-        remove_node           = core.remove_node,
-        add_node              = core.add_node,
+        set_node              = safe_set_node,
+        swap_node             = safe_swap_node,
+        remove_node           = safe_remove_node,
+        add_node              = safe_add_node,
         get_meta              = core.get_meta,
         get_node_timer        = core.get_node_timer,
         find_node_near        = core.find_node_near,
@@ -238,80 +296,134 @@ function M.precheck(code, player_name, options)
     if not func then
         local msg = tostring(syntax_err):gsub("^%[string .-%]:", "line ")
         issues[#issues + 1] = "Syntax error: " .. msg
-        return { ok = false, issues = issues }
+        return { ok = false, issues = issues, registrations = {} }
     end
 
+    -- IMPORTANT:
+    -- Precheck must never execute the submitted chunk. The previous implementation
+    -- installed a stub env and pcall(func) to discover registration calls. That made
+    -- every agent/IDE execution run once during precheck and once during real execute,
+    -- which doubled side effects such as set_node(), sound_play(), skill calls, timers,
+    -- and chat output whenever they slipped through the stub layer.
+    --
+    -- Registration diagnostics below are intentionally static and conservative. They
+    -- only inspect literal registrations that can be recognized safely from source text.
     local registrations = {}
-    local function make_stub(reg_type)
-        return function(reg_name, def)
-            def = def or {}
-            local entry = {reg_type = reg_type, name = reg_name, def = def}
-            local naming_err = check_naming(tostring(reg_name or ""))
-            if naming_err then entry.naming_error = naming_err end
-            local missing = {}
-            for _, field in ipairs(REQUIRED_FIELDS[reg_type] or {}) do
-                if def[field] == nil then missing[#missing + 1] = field end
+
+    local function find_matching_paren(src, open_pos)
+        local depth = 0
+        local quote = nil
+        local escape = false
+        local long_string = false
+        local i = open_pos
+        while i <= #src do
+            local ch = src:sub(i, i)
+            local next2 = src:sub(i, i + 1)
+            if quote then
+                if escape then
+                    escape = false
+                elseif ch == "\\" and quote ~= "]]" then
+                    escape = true
+                elseif quote == "]]" and next2 == "]]" then
+                    quote = nil
+                    i = i + 1
+                elseif ch == quote then
+                    quote = nil
+                end
+            else
+                if next2 == "[[" then
+                    quote = "]]"
+                    i = i + 1
+                elseif ch == '"' or ch == "'" then
+                    quote = ch
+                elseif ch == "(" then
+                    depth = depth + 1
+                elseif ch == ")" then
+                    depth = depth - 1
+                    if depth == 0 then return i end
+                end
             end
-            if #missing > 0 then entry.missing_fields = missing end
-            registrations[#registrations + 1] = entry
+            i = i + 1
+        end
+        return nil
+    end
+
+    local function split_first_arg(call_src)
+        local inner = call_src:match("^%s*%((.*)%)%s*$") or call_src
+        local quote = nil
+        local escape = false
+        local depth = 0
+        for i = 1, #inner do
+            local ch = inner:sub(i, i)
+            if quote then
+                if escape then
+                    escape = false
+                elseif ch == "\\" then
+                    escape = true
+                elseif ch == quote then
+                    quote = nil
+                end
+            else
+                if ch == '"' or ch == "'" then
+                    quote = ch
+                elseif ch == "{" or ch == "(" or ch == "[" then
+                    depth = depth + 1
+                elseif ch == "}" or ch == ")" or ch == "]" then
+                    if depth > 0 then depth = depth - 1 end
+                elseif ch == "," and depth == 0 then
+                    return inner:sub(1, i - 1), inner:sub(i + 1)
+                end
+            end
+        end
+        return inner, ""
+    end
+
+    local function static_registration_scan(src)
+        for reg_type, _ in pairs(REQUIRED_FIELDS) do
+            local search_from = 1
+            local pattern = "[%.:]" .. reg_type .. "%s*%("
+            while true do
+                local call_start, open_pos = src:find(pattern, search_from)
+                if not call_start then break end
+                local close_pos = find_matching_paren(src, open_pos)
+                if not close_pos then break end
+
+                local call_src = src:sub(open_pos, close_pos)
+                local first_arg, def_src = split_first_arg(call_src)
+                local reg_name = first_arg and first_arg:match("^%s*['\"]([^'\"]+)['\"]%s*$") or nil
+                local entry = {reg_type = reg_type, name = reg_name or "<dynamic>", static = true}
+
+                if reg_name then
+                    local naming_err = check_naming(reg_name)
+                    if naming_err then entry.naming_error = naming_err end
+                else
+                    entry.dynamic_name = true
+                end
+
+                local missing = {}
+                for _, field in ipairs(REQUIRED_FIELDS[reg_type] or {}) do
+                    local has_field = def_src and (
+                        def_src:find(field .. "%s*=", 1) or
+                        def_src:find("%[\"" .. field .. "\"%]%s*=", 1) or
+                        def_src:find("%['" .. field .. "'%]%s*=", 1)
+                    )
+                    if not has_field then missing[#missing + 1] = field end
+                end
+                if #missing > 0 then entry.missing_fields = missing end
+
+                registrations[#registrations + 1] = entry
+                search_from = close_pos + 1
+            end
         end
     end
 
-    local stub_core = {
-        register_node      = make_stub("register_node"),
-        register_tool      = make_stub("register_tool"),
-        register_craftitem = make_stub("register_craftitem"),
-        register_craft     = function() end,
-        register_entity    = make_stub("register_entity"),
-        register_chatcommand              = function() end,
-        register_globalstep               = function() end,
-        register_on_joinplayer            = function() end,
-        register_on_leaveplayer           = function() end,
-        register_on_player_receive_fields = function() end,
-        register_on_chat_message          = function() end,
-        register_on_generated             = function() end,
-        register_abm                      = function() end,
-        register_lbm                      = function() end,
-        log = function() end,
-        chat_send_player = function() end,
-        chat_send_all = function() end,
-        after = function() end,
-        sound_play = function() end,
-        show_formspec = function() end,
-    }
-    setmetatable(stub_core, {
-        __index = function()
-            return function() return nil end
-        end
-    })
-
-    local stub_env = {
-        print = function() end,
-        core = stub_core,
-        minetest = stub_core,
-        llm_connect = create_safe_llm_connect(player_name, options),
-        player_name = player_name or options.player_name or options.name,
-        tostring = tostring, tonumber = tonumber, type = type,
-        pairs = pairs, ipairs = ipairs, next = next,
-        table = table, string = string, math = math,
-        unpack = unpack, select = select,
-        pcall = pcall, xpcall = xpcall,
-        error = error, assert = assert,
-        setmetatable = setmetatable, getmetatable = getmetatable,
-        rawget = rawget, rawset = rawset, rawequal = rawequal,
-        os = { clock = os.clock, date = os.date, difftime = os.difftime, time = os.time },
-    }
-    setmetatable(stub_env, {__index = function() return nil end})
-    setfenv(func, stub_env)
-
-    local ok, run_err = pcall(func)
-    if not ok then
-        local msg = tostring(run_err):gsub("^%[string .-%]:", "line ")
-        issues[#issues + 1] = "Runtime error (pre-check): " .. msg
-    end
+    static_registration_scan(code)
 
     for _, entry in ipairs(registrations) do
         if entry.naming_error then issues[#issues + 1] = "Naming: " .. entry.naming_error end
+        if entry.dynamic_name then
+            issues[#issues + 1] = ("Dynamic name in %s() cannot be fully validated statically"):format(entry.reg_type)
+        end
         if entry.missing_fields then
             issues[#issues + 1] = ("Missing required fields in %s('%s'): %s")
                 :format(entry.reg_type, tostring(entry.name), table.concat(entry.missing_fields, ", "))

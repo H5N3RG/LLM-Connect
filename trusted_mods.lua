@@ -13,16 +13,46 @@ local M = {}
 M.backend_name = "trusted_worldmod"
 
 local path_policy = (_G.llm_connect and _G.llm_connect.path_policy) or _G.path_policy
+local storage_fs = (_G.llm_connect and _G.llm_connect.storage_backends) or _G.storage_backends
 local WORLD_DIR = path_policy and path_policy.world_path or core.get_worldpath()
 local WORLDMODS_DIR = path_policy and path_policy.worldmods_dir() or (WORLD_DIR .. DIR_DELIM .. "worldmods")
-local INSECURE_ENV = core.request_insecure_environment and core.request_insecure_environment() or nil
+local INSECURE_ENV = nil
+local INSECURE_ENV_REQUESTED = false
+
+local function get_insecure_env()
+    if not INSECURE_ENV_REQUESTED then
+        INSECURE_ENV_REQUESTED = true
+        if core.request_insecure_environment then
+            local ok, env = pcall(core.request_insecure_environment)
+            if ok then INSECURE_ENV = env end
+        end
+    end
+    return INSECURE_ENV
+end
+
+local function current_modname()
+    return core.get_current_modname and core.get_current_modname() or "llm_connect"
+end
+
+local function trusted_setting_contains_current()
+    local setting = core.settings and core.settings:get("secure.trusted_mods") or ""
+    local current = current_modname()
+    for token in tostring(setting or ""):gmatch("[^,%s]+") do
+        if token == current then return true end
+    end
+    return false
+end
 
 local function path_exists(path)
-    if core.get_dir_list then
+    if storage_fs and storage_fs.path_exists then
+        local ok = storage_fs.path_exists(path, "trusted_mods")
+        if ok then return true end
+    elseif core.get_dir_list then
         local ok, result = pcall(core.get_dir_list, path, nil)
         if ok and result then return true end
     end
-    local env_io = (INSECURE_ENV and INSECURE_ENV.io) or io
+    local env = get_insecure_env()
+    local env_io = (env and env.io) or io
     if env_io then
         local f = env_io.open(path, "r")
         if f then f:close(); return true end
@@ -36,14 +66,21 @@ local function shell_quote(path)
 end
 
 local function mkdir(path)
-    -- Trusted worldmods live outside the normal mod write sandbox.  Never fall
-    -- back to core.mkdir() here: with mod security enabled Luanti raises a hard
-    -- security error for worldmods, which used to crash the server on browse.
-    if not (INSECURE_ENV and INSECURE_ENV.os and INSECURE_ENV.os.execute) then
-        return false, "trusted write unavailable: request_insecure_environment() returned nil; check secure.trusted_mods and startup config"
+    -- First try Luanti's own directory helper under pcall.  On some builds this
+    -- is sufficient for world-owned paths even when no insecure environment is
+    -- exposed.  A security failure must become a normal backend error, not a
+    -- server crash.
+    if core.mkdir then
+        local ok, result = pcall(core.mkdir, path)
+        if ok and result then return true, nil end
+    end
+
+    local env = get_insecure_env()
+    if not (env and env.os and env.os.execute) then
+        return false, "trusted write unavailable: request_insecure_environment() returned nil; secure.trusted_mods contains current mod=" .. tostring(trusted_setting_contains_current())
     end
     local ok, result = pcall(function()
-        return INSECURE_ENV.os.execute("mkdir -p " .. shell_quote(path))
+        return env.os.execute("mkdir -p " .. shell_quote(path))
     end)
     if ok then
         return result == true or result == 0, nil
@@ -103,7 +140,8 @@ local function safe_path(path)
     return clean
 end
 local function fs_io()
-    return (INSECURE_ENV and INSECURE_ENV.io) or io
+    local env = get_insecure_env()
+    return (env and env.io) or io
 end
 
 local function read_file(path)
@@ -119,7 +157,7 @@ local function read_file(path)
 end
 
 local function write_file(path, content)
-    if not INSECURE_ENV and core.safe_file_write then
+    if not get_insecure_env() and core.safe_file_write then
         local ok, result = pcall(core.safe_file_write, path, content)
         if ok and result then return true end
     end
@@ -164,8 +202,16 @@ local function add_index(modname, relpath)
     return write_index(modname, entries)
 end
 
+local function has_luanti_write_helpers()
+    return core.mkdir ~= nil and core.safe_file_write ~= nil
+end
+
 function M.is_writable()
-    return INSECURE_ENV ~= nil
+    if get_insecure_env() ~= nil then return true end
+    -- Luanti may allow world-owned writes through safe helpers without exposing
+    -- an insecure environment.  Actual writes are still pcall-guarded.
+    if has_luanti_write_helpers() then return true end
+    return false
 end
 
 function M.is_browsable()
@@ -173,7 +219,7 @@ function M.is_browsable()
     -- when trusted write access is not granted, so the UI can explain the state
     -- instead of hiding/crashing the backend.
     if path_exists(WORLDMODS_DIR) then return true end
-    return INSECURE_ENV ~= nil
+    return get_insecure_env() ~= nil
 end
 
 function M.is_available()
@@ -181,16 +227,34 @@ function M.is_available()
     return M.is_browsable()
 end
 
+function M.mod_exists(modname)
+    modname = safe_modname(modname)
+    return path_exists(WORLDMODS_DIR .. DIR_DELIM .. modname)
+end
+
+function M.active_mod_status(modname)
+    modname = safe_modname(modname)
+    if M.mod_exists(modname) then
+        return true, "Active worldmod exists: " .. modname
+    end
+    if M.is_writable() then
+        return false, "Active worldmod does not exist yet. Create a file or folder to initialize it: " .. modname
+    end
+    return false, "Active worldmod does not exist and trusted backend is read-only: " .. modname
+end
+
 function M.diagnostics()
     return {
         backend = M.backend_name,
         worldmods_dir = WORLDMODS_DIR,
-        insecure_env = INSECURE_ENV ~= nil,
+        insecure_env = get_insecure_env() ~= nil,
         browsable = M.is_browsable(),
         writable = M.is_writable(),
         secure_enable_security = core.settings and core.settings:get("secure.enable_security") or nil,
         secure_trusted_mods = core.settings and core.settings:get("secure.trusted_mods") or nil,
-        current_modname = core.get_current_modname and core.get_current_modname() or nil,
+        current_modname = current_modname(),
+        trusted_setting_contains_current = trusted_setting_contains_current(),
+        luanti_write_helpers = has_luanti_write_helpers(),
     }
 end
 
@@ -202,12 +266,14 @@ function M.diagnostics_text()
         "current_modname=" .. tostring(d.current_modname),
         "secure.enable_security=" .. tostring(d.secure_enable_security),
         "secure.trusted_mods=" .. tostring(d.secure_trusted_mods),
+        "trusted_setting_contains_current=" .. tostring(d.trusted_setting_contains_current),
+        "luanti_write_helpers=" .. tostring(d.luanti_write_helpers),
         "insecure_env=" .. tostring(d.insecure_env),
         "browsable=" .. tostring(d.browsable),
         "writable=" .. tostring(d.writable),
     }
     if not d.writable then
-        lines[#lines + 1] = "Write disabled: add the real mod name to secure.trusted_mods and restart Luanti; browsing remains read-only."
+        lines[#lines + 1] = "Write disabled: request_insecure_environment() returned nil and Luanti safe write helpers are unavailable. If secure.trusted_mods already contains the current mod, this Luanti build/profile may still deny insecure env; browsing remains read-only."
     end
     return table.concat(lines, "\n")
 end
@@ -228,20 +294,40 @@ end
 
 local function collect_files(base, rel, out)
     out = out or {}
+    if storage_fs and storage_fs.collect_files then
+        local files, diagnostics = storage_fs.collect_files({
+            base = base,
+            rel = rel or "",
+            out = out,
+            label = "trusted_mods",
+            skip = { ["_llm_connect_index.txt"] = true },
+        })
+        M.last_fs_diagnostics = diagnostics
+        return files
+    end
     rel = rel or ""
     local dir = rel == "" and base or (base .. DIR_DELIM .. rel:gsub("/", DIR_DELIM))
     if core.get_dir_list then
-        for _, name in ipairs(core.get_dir_list(dir, false) or {}) do
-            if name ~= "_llm_connect_index.txt" then
-                out[#out + 1] = rel == "" and name or (rel .. "/" .. name)
+        local ok_files, files = pcall(core.get_dir_list, dir, false)
+        if ok_files then
+            table.sort(files or {})
+            for _, name in ipairs(files or {}) do
+                if name ~= "_llm_connect_index.txt" then out[#out + 1] = rel == "" and name or (rel .. "/" .. name) end
             end
+        else
+            core.log("warning", "[trusted_mods] get_dir_list(files) failed for " .. tostring(dir) .. ": " .. tostring(files))
         end
-        for _, name in ipairs(core.get_dir_list(dir, true) or {}) do
-            if name ~= "." and name ~= ".." then
-                collect_files(base, rel == "" and name or (rel .. "/" .. name), out)
+        local ok_dirs, dirs = pcall(core.get_dir_list, dir, true)
+        if ok_dirs then
+            table.sort(dirs or {})
+            for _, name in ipairs(dirs or {}) do
+                if name ~= "." and name ~= ".." then collect_files(base, rel == "" and name or (rel .. "/" .. name), out) end
             end
+        else
+            core.log("warning", "[trusted_mods] get_dir_list(dirs) failed for " .. tostring(dir) .. ": " .. tostring(dirs))
         end
     end
+    table.sort(out)
     return out
 end
 
@@ -258,39 +344,43 @@ function M.list_dir(modname, rel_dir)
     local clean, err = safe_rel(rel_dir or "")
     if not clean then return {} end
     local base = WORLDMODS_DIR .. DIR_DELIM .. modname
-    local dir = clean == "" and base or (base .. DIR_DELIM .. clean:gsub("/", DIR_DELIM))
-    local out = {}
-    if clean ~= "" then out[#out + 1] = {type = "up", name = "..", path = dirname_rel(clean)} end
-    if core.get_dir_list then
-        for _, name in ipairs(core.get_dir_list(dir, true) or {}) do
-            if name ~= "." and name ~= ".." then
-                out[#out + 1] = {type = "dir", name = name, path = clean == "" and name or (clean .. "/" .. name)}
-            end
-        end
-        for _, name in ipairs(core.get_dir_list(dir, false) or {}) do
-            if name ~= "_llm_connect_index.txt" then
-                out[#out + 1] = {type = "file", name = name, path = clean == "" and name or (clean .. "/" .. name)}
-            end
+    if not path_exists(base) then
+        if M.is_writable() then
+            M.ensure_mod(modname)
+        else
+            M.last_fs_diagnostics = {"active worldmod does not exist: " .. modname, "backend is read-only"}
+            return {}
         end
     end
-    table.sort(out, function(a, b)
-        local rank = {up = 0, dir = 1, file = 2}
-        if a.type ~= b.type then return (rank[a.type] or 9) < (rank[b.type] or 9) end
-        return tostring(a.name) < tostring(b.name)
-    end)
+    if storage_fs and storage_fs.list_dir then
+        local entries, diagnostics = storage_fs.list_dir({
+            base = base,
+            rel_dir = clean,
+            label = "trusted_mods",
+            skip = { ["_llm_connect_index.txt"] = true },
+        })
+        M.last_fs_diagnostics = diagnostics
+        return entries
+    end
+    local out = {}
+    if clean ~= "" then out[#out + 1] = {type = "up", name = "..", path = dirname_rel(clean)} end
     return out
 end
 
 function M.master_entries(modname)
     modname = safe_modname(modname)
-    local out = {{type = "dir", name = "/", path = ""}}
     local base = WORLDMODS_DIR .. DIR_DELIM .. modname
-    if core.get_dir_list then
-        for _, name in ipairs(core.get_dir_list(base, true) or {}) do
-            if name ~= "." and name ~= ".." then out[#out + 1] = {type = "dir", name = name, path = name} end
-        end
+    if storage_fs and storage_fs.master_entries then
+        local entries, diagnostics = storage_fs.master_entries({
+            base = base,
+            label = "trusted_mods",
+            skip = { ["_llm_connect_index.txt"] = true },
+            include_physical_dirs = true,
+        })
+        M.last_fs_diagnostics = diagnostics
+        return entries
     end
-    return out
+    return {{type = "dir", name = "/", path = ""}}
 end
 
 function M.make_dir(modname, rel_dir)
@@ -341,9 +431,9 @@ function M.reload_experimental(modname, relpath)
     return false, "Trusted worldmod hot-reload is intentionally disabled in v1. Save + restart is the supported path."
 end
 
-core.log("action", "[trusted_mods] backend loaded: " .. WORLDMODS_DIR .. (INSECURE_ENV and " (trusted/insecure env active)" or " (read-only/no insecure env)"))
-if not INSECURE_ENV then
-    core.log("warning", "[trusted_mods] write disabled. secure.trusted_mods=" .. tostring(core.settings and core.settings:get("secure.trusted_mods") or nil) .. ", current_modname=" .. tostring(core.get_current_modname and core.get_current_modname() or nil))
+core.log("action", "[trusted_mods] backend loaded: " .. WORLDMODS_DIR .. (get_insecure_env() and " (trusted/insecure env active)" or " (read-only/no insecure env)"))
+if not M.is_writable() then
+    core.log("warning", "[trusted_mods] write disabled. secure.trusted_mods=" .. tostring(core.settings and core.settings:get("secure.trusted_mods") or nil) .. ", current_modname=" .. tostring(current_modname()) .. ", trusted_setting_contains_current=" .. tostring(trusted_setting_contains_current()))
 end
 
 return M

@@ -4,8 +4,7 @@
 --  license: LGPL-3.0-or-later
 --
 --  HARD CUT FROM 1.0.0-dev:
---    - Legacy JSON addon dispatch is removed.
---    - Internal addons/ are not auto-loaded.
+--    - Lua-first skill registration and per-player skill toggles.
 --    - registry.register(old_addon_manifest) is deprecated and rejected.
 --
 --  ROLE NOW:
@@ -21,7 +20,6 @@ M.version = "1.1.0-dev"
 M.protocol = "lua-first"
 M.skills = M.skills or {}
 M.context_providers = M.context_providers or {}
-M.addons = {} -- compatibility visibility only; old addon runtime is intentionally dead
 
 local function trim(s)
     s = tostring(s or "")
@@ -55,6 +53,19 @@ local function shallow_copy(t)
     return out
 end
 
+local function is_skill_available(skill)
+    if not skill or skill.enabled == false then return false end
+    if type(skill.available) == "function" then
+        local ok, res = pcall(skill.available)
+        if not ok then
+            core.log("warning", "[registry] skill availability check failed for " .. tostring(skill.id) .. ": " .. tostring(res))
+            return false
+        end
+        return res ~= false and res ~= nil
+    end
+    return skill.available ~= false
+end
+
 function M.register_skill(def)
     if type(def) ~= "table" then return false, "skill definition must be a table" end
     local id, err = normalize_id(def.id or def.name)
@@ -71,7 +82,7 @@ function M.register_skill(def)
     -- enabled/available = globally loadable; default_enabled = per-player default toggle.
     -- Safety default: skills are loaded and visible, but OFF until explicitly enabled.
     skill.enabled = skill.enabled ~= false
-    skill.available = skill.available ~= false
+    if skill.available == nil then skill.available = true end
     skill.default_enabled = skill.default_enabled == true
     skill.origin = skill.origin or "internal"
     skill.category = skill.category or "skill"
@@ -102,7 +113,7 @@ function M.list_skills(player_name, filter)
     end
 
     for id, skill in pairs(M.skills) do
-        if skill.enabled ~= false and skill.available ~= false and (not filter or allowed[id]) then
+        if is_skill_available(skill) and (not filter or allowed[id]) then
             local required = skill.required_priv or skill.priv or "llm_agent"
             local player = M.player_skill_overrides and M.player_skill_overrides[player_name]
             local active
@@ -174,16 +185,13 @@ function M.describe_for_agent(player_name, filter)
     local skills = M.list_skills(player_name, filter)
     if #skills == 0 then return "" end
     local lines = {
-        "Registered Lua-first skills are accessible through llm_connect.registry.",
-        "Do not use JSON tool calls. Use Lua calls or skill functions if explicitly exposed.",
+        "Active Lua-first skills are available through llm_connect.skills.<skill_id>.",
+        "Detailed manuals are intentionally not injected. Use llm_connect.context.search(...) or get_section(...) before complex skill calls.",
     }
     for _, skill in ipairs(skills) do
         lines[#lines + 1] = string.format("- %s v%s: %s", tostring(skill.id), tostring(skill.version or "?"), tostring(skill.description or ""))
-        if type(skill.api) == "string" and skill.api ~= "" then
-            lines[#lines + 1] = "  API: " .. skill.api
-        elseif type(skill.api) == "table" then
-            for _, line in ipairs(skill.api) do lines[#lines + 1] = "  API: " .. tostring(line) end
-        end
+        local ctx_id = skill.context_section or ("skills." .. tostring(skill.id))
+        lines[#lines + 1] = "  Context section: " .. ctx_id
     end
     return table.concat(lines, "\n")
 end
@@ -196,7 +204,7 @@ end
 M.player_skill_overrides = M.player_skill_overrides or {}
 
 local function skill_default_enabled(skill)
-    if skill.enabled == false or skill.available == false then return false end
+    if not is_skill_available(skill) then return false end
     return skill.default_enabled == true
 end
 
@@ -225,7 +233,7 @@ function M.get_status(player_name)
     local out = {}
     for id, skill in pairs(M.skills) do
         local required = skill.required_priv or skill.priv or "llm_agent"
-        local available = skill.available ~= false
+        local available = is_skill_available(skill)
         local has = has_priv(player_name, required)
         local enabled = M.is_addon_enabled(player_name, id)
         out[#out + 1] = {
@@ -254,8 +262,8 @@ end
 
 function M.register(def)
     local id = type(def) == "table" and (def.id or def.name) or "(unknown)"
-    core.log("warning", "[registry] rejected legacy addon registration '" .. tostring(id) .. "' — JSON addon dispatch was removed in v1.1.0-dev")
-    return false, "legacy addon API removed; use register_skill()"
+    core.log("warning", "[registry] rejected old-style addon registration '" .. tostring(id) .. "' — use register_skill()")
+    return false, "old-style addon API removed; use register_skill()"
 end
 
 function M.load_internal()
@@ -279,29 +287,10 @@ function M.load_internal()
 end
 
 function M.discover_external()
-    core.log("action", "[registry] external legacy addon discovery skipped — Lua-first skills must register explicitly")
+    core.log("action", "[registry] external addon discovery skipped — Lua-first skills must register explicitly")
     return 0
 end
 
-function M.get_manifest()
-    return {}
-end
-
-function M.manifest_to_text()
-    return "(legacy JSON tool manifest removed; Lua-first runtime active)"
-end
-
-function M.dispatch()
-    return {ok = false, message = "legacy JSON dispatch removed; use Lua through core_executor"}
-end
-
-function M.snapshot()
-    return {}
-end
-
-function M.restore()
-    return false, "legacy addon snapshot/restore removed"
-end
 
 function M.expose_global()
     local root = rawget(_G, "llm_connect")

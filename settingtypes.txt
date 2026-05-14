@@ -22,6 +22,11 @@ llm_frequency_penalty    (Frequency penalty, -2..2)                   float  0.0
 # Enable verbose API request/response logging to the server log.
 llm_debug                (Enable debug logging)                       bool   false
 
+# Write raw LLM request/response payloads to world-local trace files.
+# Files: llm_user_prompt_log.txt and llm_response_prompt_log.txt in the world directory.
+# WARNING: very verbose. Prompt content may contain private data. Authorization headers are not logged.
+llm_trace_prompt_log    (Trace raw LLM request/response payloads to world files) bool false
+
 
 # === Timeouts ===
 
@@ -71,9 +76,6 @@ llm_agent_enabled        (Enable agent mode globally)                 bool   tru
 # reaches this limit.
 llm_agent_max_iterations (Max agent loop iterations)                  int    8      1     32
 
-# Reserved for the future rollback layer. v1.1.0-dev currently routes all
-# execution through core_executor.lua; legacy addon snapshot hooks were removed.
-llm_agent_snapshot       (Reserve snapshot support before agent run) bool   true
 
 
 # === Smart Lua IDE ===

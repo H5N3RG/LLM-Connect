@@ -6,7 +6,7 @@
 --  Stateless parsing / repair helpers for LLM output.
 --
 --  ROLE:
---    Raw LLM text -> normalized executable Lua text or legacy payload hints.
+--    Raw LLM text -> normalized executable Lua text.
 --    This module must stay side-effect free: no registry writes, no execution.
 -- ===========================================================================
 
@@ -86,24 +86,9 @@ function M.extract_lua_blocks(text)
     return out
 end
 
-function M.extract_json_blocks(text)
-    local out = {}
-    for _, block in ipairs(M.extract_code_fences(text)) do
-        if block.lang == "json" or block.lang == "javascript" or block.lang == "js" then
-            out[#out + 1] = block
-        end
-    end
-    return out
-end
-
 -- ---------------------------------------------------------------------------
 -- shape detection
 -- ---------------------------------------------------------------------------
-
-function M.looks_like_json(s)
-    s = M.trim(M.strip_markdown_fence_noise(s))
-    return s:sub(1, 1) == "{" or s:sub(1, 1) == "["
-end
 
 function M.looks_like_lua(s)
     s = M.trim(M.strip_markdown_fence_noise(s))
@@ -251,18 +236,10 @@ function M.split_dual_channel_response(text)
 end
 
 -- ---------------------------------------------------------------------------
--- legacy JSON bridge placeholder
+-- Compatibility wrapper for code paths that still ask for one executable chunk.
+-- The agent loop uses split_dual_channel_response() directly; this wrapper is
+-- Lua-only and intentionally has no legacy tool-call fallback.
 -- ---------------------------------------------------------------------------
-
-function M.convert_legacy_json_to_lua(text)
-    -- Deliberately minimal for the first migration step.
-    -- agent.lua will keep the old JSON dispatcher until its rewrite; this hook
-    -- gives us a stable place to add JSON->Lua lowering without touching llm_api.
-    if not M.looks_like_json(text) then
-        return { ok = false, reason = "not json-shaped" }
-    end
-    return { ok = false, reason = "legacy JSON conversion not implemented yet" }
-end
 
 function M.parse_llm_response(text, opts)
     opts = opts or {}
@@ -278,13 +255,10 @@ function M.parse_llm_response(text, opts)
         return lua
     end
 
-    local json = M.convert_legacy_json_to_lua(raw)
-    if json.ok then return json end
-
     return {
         ok = false,
         kind = "unknown",
-        reason = lua.reason or json.reason or "unrecognized LLM response",
+        reason = lua.reason or "no executable Lua found",
         raw = raw,
     }
 end

@@ -157,6 +157,19 @@ local function load_entries(name, ide_session, fm)
     entries = filtered_entries(entries, fm.filter)
     fm._master = master_entries(name, ide_session)
     fm._entries = entries
+
+    if ide_session.persist_backend == "trusted_worldmod" then
+        local tm = _G.llm_connect and _G.llm_connect.trusted_mods
+        if tm and tm.active_mod_status and fm.dir == "" and #entries == 0 then
+            local exists, msg = tm.active_mod_status(ide_session.active_modname)
+            if not exists then
+                fm.preview = tostring(msg or "Active worldmod is not available.")
+                    .. "\n\nUse Diagnostics for trusted backend details."
+                fm.status = tostring(msg or "Active worldmod is not available.")
+            end
+        end
+    end
+
     return entries
 end
 
