@@ -1,26 +1,26 @@
 -- ===========================================================================
---  init.lua — LLM Connect 1.1.0-dev
+--  init.lua — LLM Connect 1.2.0-dev
 --  author: H5N3RG
 --  license: LGPL-3.0-or-later
 --
 --  LOAD ORDER:
 --    1. Preserve HTTP API handle
 --    2. Register privileges
---    3. llm_api.lua          — HTTP layer, API configuration
---    4. parser_utils.lua     — LLM output parsing / repair
---    5. basic_context.lua    — base context provider (basic + extended)
---    6. registry.lua         — skill gateway, set _G.llm_connect
+--    3. api/llm_api.lua      — HTTP layer, API configuration
+--    4. agent/parser_utils.lua — LLM output parsing / repair
+--    5. context/basic_context.lua — base context provider
+--    6. skills/registry.lua — skill gateway, set _G.llm_connect
 --       └ registry.expose_global()     → expose _G.llm_connect.registry
---    7. context_registry.lua — agent self-context / retrieval layer
+--    7. context/context_registry.lua — agent self-context / retrieval layer
 --       └ registry.load_internal()     → load built-in skills after context exists
---    8. execution_policy.lua — central root/dev execution policy
---    9. path_policy.lua      — stack-relative filesystem roots
---   10. storage_backends.lua — robust dir-list / filesystem helper layer
---   11. runtime_scripts.lua  — IDE persistence + hot-reload backend
---   12. trusted_mods.lua     — root-only trusted worldmod backend
---   13. core_executor.lua    — Shared Lua Runtime Backend
---   14. agent.lua            — Agent-Orchestrator
---   15. smart_lua_ide/       — first-class frontend, loaded directly
+--    8. runtime/execution_policy.lua — central root/dev execution policy
+--    9. runtime/path_policy.lua — stack-relative filesystem roots
+--   10. runtime/storage/storage_backends.lua — filesystem helper layer
+--   11. runtime/storage/runtime_scripts.lua — IDE persistence + hot-reload backend
+--   12. runtime/storage/trusted_mods.lua — root-only trusted worldmod backend
+--   13. runtime/core_executor.lua — Shared Lua Runtime Backend
+--   14. agent/agent_runtime.lua — Agent-Orchestrator
+--   15. gui/       — first-class frontend, loaded directly
 --       └ ide_storage.lua    — backend bridge for IDE persistence
 --       └ code_executor.lua  — legacy shim to core_executor
 --       └ ide_asset_picker.lua
@@ -38,33 +38,98 @@
 
 local mod_name = core.get_current_modname()
 local mod_dir  = core.get_modpath(mod_name)
-local IDE_DIR  = mod_dir .. "/smart_lua_ide"
+local AGENT_DIR = mod_dir .. "/agent"
+local API_DIR   = mod_dir .. "/api"
+local CONTEXT_DIR = mod_dir .. "/context"
+local RUNTIME_DIR = mod_dir .. "/runtime"
+local STORAGE_DIR = RUNTIME_DIR .. "/storage"
+local SKILLS_DIR = mod_dir .. "/skills"
+local GUI_DIR   = mod_dir .. "/gui"
 
 _G.llm_connect = rawget(_G, "llm_connect") or {}
+_G.llm_connect.version = _G.llm_connect.version or "1.2.0-dev"
+_G.llm_connect.protocol = _G.llm_connect.protocol or "lua-first"
+
+-- Subsystem health / degraded-mode registry. Loaded before all subsystem
+-- loaders so failures can be reported instead of turning into nil crashes.
+local health_ok, health_module = pcall(dofile, mod_dir .. "/subsystem_health.lua")
+if health_ok and type(health_module) == "table" then
+    _G.llm_connect.health = health_module
+else
+    core.log("warning", "[llm_connect] subsystem_health.lua unavailable: " .. tostring(health_module))
+    _G.llm_connect.health = _G.llm_connect.health or {
+        status = {},
+        mark_ok = function() end,
+        mark_failed = function() end,
+        mark_degraded = function() end,
+        report_text = function() return "subsystem health unavailable" end,
+    }
+end
+
+local function mark_ok(name, meta)
+    local h = _G.llm_connect and _G.llm_connect.health
+    if h and h.mark_ok then return h.mark_ok(name, meta) end
+end
+
+local function mark_failed(name, err, meta)
+    local h = _G.llm_connect and _G.llm_connect.health
+    if h and h.mark_failed then return h.mark_failed(name, err, meta) end
+end
+
 
 -- Helper: load a file with error handling
 -- fatal=true  → aborts init on error (hard failure)
 -- fatal=false → logs a warning, returns nil (optional module)
+local function file_exists(path)
+    local f = io.open(path, "r")
+    if f then f:close(); return true end
+    return false
+end
+
 local function load_module(path, label, fatal)
+    if not file_exists(path) then
+        local msg = string.format("%s missing at %s", label, tostring(path))
+        mark_failed(label, msg, { path = path, fatal = fatal })
+        if fatal then
+            core.log("error", "[llm_connect] FATAL: " .. msg)
+            error("[llm_connect] init aborted — " .. msg)
+        end
+        core.log("warning", "[llm_connect] optional module missing: " .. msg)
+        return nil
+    end
+
     local ok, result = pcall(dofile, path)
     if not ok then
+        mark_failed(label, result, { path = path, fatal = fatal })
         if fatal then
             core.log("error", string.format(
-                "[llm_connect] FATAL: %s could not be loaded: %s",
-                label, tostring(result)))
+                "[llm_connect] FATAL: %s could not be loaded from %s: %s",
+                label, tostring(path), tostring(result)))
             error("[llm_connect] init aborted — " .. label .. " failed")
         else
             core.log("warning", string.format(
-                "[llm_connect] %s not loaded: %s", label, tostring(result)))
+                "[llm_connect] %s not loaded from %s: %s", label, tostring(path), tostring(result)))
             return nil
         end
     end
     if result == nil and fatal then
+        mark_failed(label, "returned nil", { path = path, fatal = fatal })
         core.log("error", "[llm_connect] FATAL: " .. label .. " returned nil")
         error("[llm_connect] init aborted — " .. label .. " returned nil")
     end
+    mark_ok(label, { path = path })
     core.log("action", "[llm_connect] ✓ " .. label .. " loaded")
     return result
+end
+
+local function require_method(module, method, label)
+    if type(module) ~= "table" or type(module[method]) ~= "function" then
+        local msg = string.format("%s.%s unavailable", tostring(label), tostring(method))
+        mark_failed(label, msg, { fatal = false })
+        core.log("warning", "[llm_connect] degraded subsystem: " .. msg)
+        return false
+    end
+    return true
 end
 
 -- ===========================================================================
@@ -95,7 +160,7 @@ core.register_privilege("llm_dev", {
 })
 
 core.register_privilege("llm_agent", {
-    description  = "Access to LLM Connect agent mode and addon tools",
+    description  = "Access to LLM Connect agent mode and skill tools",
     give_to_singleplayer = false,
     give_to_admin = true,
 })
@@ -111,152 +176,106 @@ core.register_privilege("llm_root", {
 -- 3. Optional raw prompt/response trace logger
 -- ===========================================================================
 
-local prompt_trace = load_module(mod_dir .. "/prompt_trace.lua", "prompt_trace", false)
+local prompt_trace = load_module(AGENT_DIR .. "/agent_trace.lua", "prompt_trace", false)
 _G.llm_connect.prompt_trace = prompt_trace
 _G.prompt_trace = prompt_trace
+if prompt_trace then
+    core.log("action", "[llm_connect] prompt tracing hook installed (llm_trace_prompt_log controls writes)")
+else
+    core.log("warning", "[llm_connect] prompt tracing module not available")
+end
 
 -- ===========================================================================
--- 4. LLM API
+-- 4. API subsystem — provider boundary
 -- ===========================================================================
 
-local llm_api = load_module(mod_dir .. "/llm_api.lua", "llm_api", true)
+local api_modules = load_module(API_DIR .. "/api_init.lua", "api_init", true)
+require_method(api_modules, "reload_config", "api")
+local llm_api = api_modules.llm_api
+require_method(llm_api, "init", "llm_api")
 
 if not llm_api.init(http) then
     core.log("error", "[llm_connect] LLM API init failed")
     return
 end
 
--- ===========================================================================
--- 4. Parser utils
--- ===========================================================================
-
-local parser_utils = load_module(mod_dir .. "/parser_utils.lua", "parser_utils", true)
+_G.llm_api = llm_api
 
 -- ===========================================================================
--- 5. Basic context
+-- 5. Parser utils
 -- ===========================================================================
 
-local basic_context = load_module(mod_dir .. "/basic_context.lua", "basic_context", true)
-
--- ===========================================================================
--- 6. Registry — addon gateway
--- ===========================================================================
-
-local registry = load_module(mod_dir .. "/registry.lua", "registry", true)
-
--- Set global namespace: _G.llm_connect.registry ready for external mods
-registry.expose_global()
-
--- ===========================================================================
--- 7. Context registry — Lua-native agent self-context retrieval
--- ===========================================================================
-
-local context_registry = load_module(mod_dir .. "/context_registry.lua", "context_registry", true)
-_G.llm_connect.context_registry = context_registry
-_G.llm_connect.context = context_registry
-_G.context_registry = context_registry
-
--- Load internal skills after the context layer exists, so skills may register
--- on-demand documentation sections without bloating the system prompt.
-registry.load_internal()
-
--- ===========================================================================
--- 8. Execution policy
--- ===========================================================================
-
-local execution_policy = load_module(mod_dir .. "/execution_policy.lua", "execution_policy", true)
-_G.llm_connect.policy = execution_policy
+local parser_utils = load_module(AGENT_DIR .. "/parser_utils.lua", "parser_utils", true)
 _G.llm_connect.parser_utils = parser_utils
 _G.parser_utils = parser_utils
 
 -- ===========================================================================
--- 8. Path policy — stack-relative filesystem roots
+-- 6. Context subsystem — mode-aware context + retrieval API
 -- ===========================================================================
 
-local path_policy = load_module(mod_dir .. "/path_policy.lua", "path_policy", true)
-_G.llm_connect.path_policy = path_policy
+local context_modules = load_module(CONTEXT_DIR .. "/context_init.lua", "context_init", true)
+require_method(context_modules, "get", "context")
+local basic_context = context_modules.basic_context
+local context_registry = context_modules.registry
+_G.basic_context = basic_context
+_G.context_registry = context_registry
+
+-- ===========================================================================
+-- 7. Skills subsystem — Lua-first capability registry
+-- ===========================================================================
+
+local skills_modules = load_module(SKILLS_DIR .. "/skills_init.lua", "skills_init", true)
+require_method(skills_modules, "load_internal", "skills")
+local registry = skills_modules.registry
+_G.registry = registry
+
+-- Load internal skills after the context layer exists, so skills may register
+-- on-demand documentation sections without bloating the system prompt.
+skills_modules.load_internal()
+
+-- ===========================================================================
+-- 8. Runtime subsystem — policy, paths, storage, executor
+-- ===========================================================================
+
+local runtime_modules = load_module(RUNTIME_DIR .. "/runtime_init.lua", "runtime_init", true)
+require_method(runtime_modules, "execute", "runtime")
+local execution_policy = runtime_modules.execution_policy
+local path_policy = runtime_modules.path_policy
+local storage_backends = runtime_modules.storage_backends
+local runtime_scripts = runtime_modules.runtime_scripts
+local trusted_mods = runtime_modules.trusted_mods
+local core_executor = runtime_modules.core_executor
+_G.execution_policy = execution_policy
 _G.path_policy = path_policy
-
--- ===========================================================================
--- 9. IDE persistence / hot-reload backends
--- ===========================================================================
-
-local storage_backends = load_module(mod_dir .. "/storage_backends.lua", "storage_backends", true)
-_G.llm_connect.storage_backends = storage_backends
 _G.storage_backends = storage_backends
-
-local runtime_scripts = load_module(mod_dir .. "/runtime_scripts.lua", "runtime_scripts", true)
-_G.llm_connect.runtime_scripts = runtime_scripts
 _G.runtime_scripts = runtime_scripts
-
-local trusted_mods = load_module(mod_dir .. "/trusted_mods.lua", "trusted_mods", false)
-_G.llm_connect.trusted_mods = trusted_mods
 _G.trusted_mods = trusted_mods
-
--- ===========================================================================
--- 9. Core executor — shared Lua runtime backend
--- ===========================================================================
-
-local core_executor = load_module(mod_dir .. "/core_executor.lua", "core_executor", true)
-_G.llm_connect.core_executor = core_executor
 _G.core_executor = core_executor
+
+-- ===========================================================================
+-- 9. Agent middleware modules
+-- ===========================================================================
+
+local agent_modules = load_module(AGENT_DIR .. "/agent_init.lua", "agent_init", true)
+_G.llm_connect.agent_modules = agent_modules
 
 -- ===========================================================================
 -- 10. Agent orchestrator
 -- ===========================================================================
 
-local agent = load_module(mod_dir .. "/agent.lua", "agent", true)
-
--- Expose agent in global namespace
+local agent = load_module(AGENT_DIR .. "/agent_runtime.lua", "agent", true)
+require_method(agent, "run", "agent")
 _G.llm_connect.agent = agent
 
 -- ===========================================================================
--- 11. Smart Lua IDE — first-class sub-system
---    Loaded directly by init.lua, NOT through the registry.
---    Load order within the IDE matters:
---      ide_storage → code_executor → ide_asset_picker → ide_gui
+-- 11. GUI subsystem — frontends only
 -- ===========================================================================
 
-local ide_storage      = load_module(IDE_DIR .. "/ide_storage.lua",      "ide_storage",      false)
-local code_executor    = load_module(IDE_DIR .. "/code_executor.lua",    "code_executor_legacy_shim", false)
-local ide_asset_picker = load_module(IDE_DIR .. "/ide_asset_picker.lua", "ide_asset_picker", false)
-local ide_file_manager = load_module(IDE_DIR .. "/ide_file_manager.lua", "ide_file_manager", false)
-local ide_gui          = load_module(IDE_DIR .. "/ide_gui.lua",          "ide_gui",          false)
-
--- Expose IDE modules as globals so ide_gui.lua can resolve them at call time
-_G.ide_storage      = ide_storage
-_G.code_executor    = code_executor
-_G.ide_asset_picker = ide_asset_picker
-_G.ide_file_manager = ide_file_manager
-_G.ide_gui          = ide_gui
-
--- ===========================================================================
--- 11. Main GUI (Chat + Agent panel)
--- ===========================================================================
-
-local main_gui = load_module(mod_dir .. "/main_gui.lua", "main_gui", true)
-
--- ===========================================================================
--- 12. Config GUI
--- ===========================================================================
-
-local config_gui = load_module(mod_dir .. "/config_gui.lua", "config_gui", true)
-
--- ===========================================================================
--- Expose remaining modules as globals
--- Required by config_gui, main_gui, agent, and addon code that resolves
--- dependencies at call time via _G rather than at load time.
--- ===========================================================================
-
-_G.llm_api       = llm_api        -- used by config_gui, main_gui, agent, IDE
-_G.parser_utils  = parser_utils   -- used by agent/core_executor
-_G.runtime_scripts = runtime_scripts -- used by IDE/core_executor
-_G.trusted_mods = trusted_mods    -- optional root-only trusted worldmod backend
-_G.core_executor = core_executor  -- shared IDE/Agent/Skill runtime
-_G.basic_context = basic_context  -- used by agent.lua
-_G.context_registry = context_registry -- used by agent/core_executor/skills
-_G.main_gui      = main_gui       -- used by config_gui close, ide_gui close
-_G.config_gui    = config_gui     -- used by main_gui open_config button
+local gui_modules = load_module(GUI_DIR .. "/gui_init.lua", "gui_init", true)
+require_method(gui_modules, "show", "gui")
+require_method(gui_modules, "handle_fields", "gui")
+local main_gui = gui_modules.main_gui
+local config_gui = gui_modules.config_gui
 
 -- ===========================================================================
 -- 10. Load external addon mods (after mods_loaded)
@@ -266,10 +285,15 @@ _G.config_gui    = config_gui     -- used by main_gui open_config button
 -- ===========================================================================
 
 core.register_on_mods_loaded(function()
-    registry.discover_external()
+    if registry and type(registry.discover_external) == "function" then
+        local ok, err = pcall(registry.discover_external)
+        if not ok then
+            mark_failed("skills.discover_external", err, { fatal = false })
+        end
+    end
     core.log("action", string.format(
         "[llm_connect] ready — %d Lua-first skill(s) registered",
-        (function() local n=0; for _ in pairs(registry.skills or {}) do n=n+1 end; return n end)()))
+        (function() local n=0; for _ in pairs((registry and registry.skills) or {}) do n=n+1 end; return n end)()))
 end)
 
 -- ===========================================================================
@@ -280,7 +304,13 @@ core.register_chatcommand("llm", {
     description = "Open the LLM Connect chat interface",
     privs       = { llm = true },
     func = function(name, _)
-        main_gui.show(name)
+        if gui_modules and gui_modules.show then
+            gui_modules.show(name, "main")
+        elseif main_gui and main_gui.show then
+            main_gui.show(name)
+        else
+            core.chat_send_player(name, "[LLM] GUI unavailable. Use /llm_health for details.")
+        end
         return true
     end,
 })
@@ -289,7 +319,13 @@ core.register_chatcommand("llm_config", {
     description = "Open LLM Connect configuration",
     privs       = { llm = true },
     func = function(name, _)
-        config_gui.show(name)
+        if gui_modules and gui_modules.show then
+            gui_modules.show(name, "config")
+        elseif config_gui and config_gui.show then
+            config_gui.show(name)
+        else
+            core.chat_send_player(name, "[LLM] Config GUI unavailable. Use /llm_health for details.")
+        end
         return true
     end,
 })
@@ -298,7 +334,7 @@ core.register_chatcommand("llm_config_reload", {
     description = "Reload LLM Connect settings without server restart",
     privs       = { llm_root = true },
     func = function(name, _)
-        local ok, err = pcall(llm_api.reload_config)
+        local ok, err = pcall(api_modules.reload_config)
         if ok then
             core.chat_send_player(name, "[LLM] ✓ Configuration reloaded")
             return true
@@ -306,6 +342,18 @@ core.register_chatcommand("llm_config_reload", {
             core.chat_send_player(name, "[LLM] ✗ Error: " .. tostring(err))
             return false, tostring(err)
         end
+    end,
+})
+
+
+core.register_chatcommand("llm_health", {
+    description = "Show LLM Connect subsystem health/degraded-mode status",
+    privs       = { llm_root = true },
+    func = function(name, _)
+        local h = _G.llm_connect and _G.llm_connect.health
+        local report = h and h.report_text and h.report_text() or "subsystem health unavailable"
+        core.chat_send_player(name, "[LLM Health]\n" .. report)
+        return true
     end,
 })
 
@@ -349,7 +397,14 @@ core.register_on_player_receive_fields(function(player, formname, fields)
        formname:match("^llm_connect:chat") or
        formname:match("^llm_connect:agent") then
         if not execution_policy.can_chat(name) then return true end
-        return main_gui.handle_fields(name, formname, fields)
+        if gui_modules and gui_modules.handle_fields then
+            return gui_modules.handle_fields(name, formname, fields)
+        end
+        if main_gui and main_gui.handle_fields then
+            return main_gui.handle_fields(name, formname, fields)
+        end
+        core.chat_send_player(name, "[LLM] Main GUI unavailable. Use /llm_health for details.")
+        return true
 
     -- Smart Lua IDE and IDE sub-formspecs
     elseif formname:match("^llm_connect:ide") then
@@ -357,14 +412,23 @@ core.register_on_player_receive_fields(function(player, formname, fields)
             core.chat_send_player(name, "[LLM] Missing privilege: llm_dev (or llm_root)")
             return true
         end
-        if _G.ide_gui then
-            return _G.ide_gui.handle_fields(name, formname, fields)
+        if gui_modules and gui_modules.handle_fields then
+            return gui_modules.handle_fields(name, formname, fields)
         end
+        core.chat_send_player(name, "[LLM] IDE GUI unavailable")
+        return true
 
     -- Config GUI
     elseif formname:match("^llm_connect:config") then
         if not execution_policy.can_config(name) then return true end
-        return config_gui.handle_fields(name, formname, fields)
+        if gui_modules and gui_modules.handle_fields then
+            return gui_modules.handle_fields(name, formname, fields)
+        end
+        if config_gui and config_gui.handle_fields then
+            return config_gui.handle_fields(name, formname, fields)
+        end
+        core.chat_send_player(name, "[LLM] Config GUI unavailable. Use /llm_health for details.")
+        return true
     end
 
     return false
@@ -399,4 +463,4 @@ end)
 
 -- ===========================================================================
 
-core.log("action", "[llm_connect] LLM Connect 1.1.0-dev init complete")
+core.log("action", "[llm_connect] LLM Connect 1.2.0-dev init complete")
