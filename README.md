@@ -1,3 +1,5 @@
+## !! This README.md is deprecated and only in use as placeholder, waiting for update.
+
 # LLM-Connect
 
 LLM-Connect is a Lua-first AI agent framework for Luanti (formerly Minetest).
