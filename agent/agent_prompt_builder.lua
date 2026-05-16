@@ -62,7 +62,8 @@ function M.build_system_prompt(player_name, options, state, deps)
         "Never wrap normal explanations in Lua. Keep visible chat text outside action blocks.",
         "Text outside lua_action is visible to the player. lua_action content is hidden and executed by core_executor.lua.",
         "The prompt is intentionally compact. Do not guess missing APIs, node names, server state, or skill details.",
-        "When details are needed, first request focused context through llm_connect.context.* inside lua_action.",
+        "When details are needed, first request focused context through llm_connect.context.load()/lookup() inside lua_action.",
+        "Prefer exact context ids or glossary aliases over search. search() is a fallback only.",
         "",
         "Action block format:",
         "```lua_action",
@@ -77,7 +78,9 @@ function M.build_system_prompt(player_name, options, state, deps)
         "- Do not register nodes/items/entities/crafts during runtime.",
         "- If no action is needed, do not emit any lua_action block.",
         "- For multi-step work, including context lookup before acting, return {done=false, continue=true, message=\"...\"}; otherwise stop.",
-        "- Self-context API: llm_connect.context.list_sections(), llm_connect.context.search(query), llm_connect.context.get_section(id).",
+        "- Self-context API: load(key), lookup(key), keys(), has(key), list_sections(), get_section(id).",
+        "- Glossary aliases: worldedit, commands, nodes, server, api. Example: local doc = llm_connect.context.load('worldedit')",
+        "- If using search(query), remember it returns an object: {ok=true,count=n,sections={...}}, not an array or string.",
     }
 
     if basic ~= "" then

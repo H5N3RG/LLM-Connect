@@ -67,18 +67,18 @@ Der einzige öffentliche Einstiegspunkt. Alles andere ist intern.
 ```lua
 -- options:
 {
-    max_iterations = 8,          -- Loop-Limit (default aus settings)
+    max_iterations = 8,          -- Loop limit (default from settings)
     timeout        = 120,        -- pro LLM-Anfrage
     mode           = "loop",     -- "single" | "loop" (default: "loop")
-    addon_filter   = nil,        -- nil = alle, oder {"worldedit", "mobs_redo"}
-    snapshot       = true,       -- Snapshot vor erster Ausführung
+    addon_filter   = nil,        -- nil = all, or {"worldedit", "mobs_redo"}
+    snapshot       = true,       -- Snapshot before first execution
 }
 
 -- callbacks:
 {
     on_step    = function(step_nr, plan, results) end,  -- nach jeder Iteration
     on_done    = function(result) end,                   -- am Ende
-    on_error   = function(err) end,                      -- bei hartem Fehler
+    on_error   = function(err) end,                      -- on hard error
 }
 ```
 
@@ -236,12 +236,12 @@ Addons delegieren Snapshot-Anfragen an den Agent — sie kümmern sich
 nicht selbst darum.
 
 ```lua
--- Vor jeder Ausführungskette:
+-- Before each execution chain:
 agent.snapshot(player_name)   →  speichert addon-spezifische Undo-Daten
                                   (jedes Addon mit undo-Support registriert
                                    einen snapshot_hook und restore_hook)
 
--- Spieler ruft Undo auf:
+-- Player calls undo:
 agent.undo(player_name)       →  ruft alle restore_hooks auf
 ```
 

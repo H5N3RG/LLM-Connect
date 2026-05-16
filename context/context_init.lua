@@ -117,6 +117,32 @@ function M.get_section(player_name, id, args)
     return registry_call("get_section", player_name, id, args)
 end
 
+
+function M.keys(player_name, opts)
+    player_name, opts = normalize_context_args(player_name, opts)
+    return registry_call("keys", player_name, opts) or {}
+end
+
+function M.has(player_name, key)
+    player_name, key = normalize_section_args(player_name, key, nil)
+    return registry_call("has", player_name, key) or {}
+end
+
+function M.lookup(player_name, key, args)
+    player_name, key, args = normalize_section_args(player_name, key, args)
+    return registry_call("lookup", player_name, key, args) or {}
+end
+
+function M.load(player_name, key, args)
+    player_name, key, args = normalize_section_args(player_name, key, args)
+    return registry_call("load", player_name, key, args) or {}
+end
+
+function M.search_first(player_name, query, opts)
+    player_name, query, opts = normalize_query_args(player_name, query, opts)
+    return registry_call("search_first", player_name, query, opts) or {}
+end
+
 function M.register_section(def)
     return registry_call("register_section", def)
 end

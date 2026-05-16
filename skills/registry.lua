@@ -32,6 +32,7 @@ end
 
 local function has_priv(player_name, priv)
     if not priv or priv == "" then return true end
+    if not player_name or player_name == "" then return false end
     local policy = _G.llm_connect and _G.llm_connect.policy
     if policy and policy.has_priv then return policy.has_priv(player_name, priv) end
     local privs = core.get_player_privs(player_name) or {}
@@ -115,14 +116,12 @@ function M.list_skills(player_name, filter)
     for id, skill in pairs(M.skills) do
         if is_skill_available(skill) and (not filter or allowed[id]) then
             local required = skill.required_priv or skill.priv or "llm_agent"
-            local player = M.player_skill_overrides and M.player_skill_overrides[player_name]
-            local active
-            if player and player[id] ~= nil then
-                active = player[id] == true
-            else
-                active = skill.default_enabled == true
-            end
-            if active and has_priv(player_name, required) then out[#out + 1] = skill end
+            local attached = M.is_skill_attached(player_name, id)
+            local manual = M.has_player_override(player_name, id) and attached
+            -- Manual root attachment is authoritative for the target session.
+            -- Skill required_priv remains visible in status, but it does not block
+            -- a skill that llm_root explicitly attached to this player.
+            if attached and (manual or has_priv(player_name, required)) then out[#out + 1] = skill end
         end
     end
     table.sort(out, function(a, b) return tostring(a.id) < tostring(b.id) end)
@@ -208,20 +207,46 @@ local function skill_default_enabled(skill)
     return skill.default_enabled == true
 end
 
-function M.is_addon_enabled(player_name, id)
-    -- Kept for main_gui compatibility; this now means "skill enabled".
-    local skill = M.skills[id]
-    if not skill then return false end
-    local player = M.player_skill_overrides[player_name]
+local function get_player_override(player_name, id)
+    local player = M.player_skill_overrides and M.player_skill_overrides[player_name]
     if player and player[id] ~= nil then return player[id] == true end
-    return skill_default_enabled(skill)
+    return nil
+end
+
+function M.is_skill_attached(player_name, id)
+    local override = get_player_override(player_name, id)
+    if override ~= nil then return override end
+    return skill_default_enabled(M.skills[id])
+end
+
+function M.has_player_override(player_name, id)
+    return get_player_override(player_name, id) ~= nil
+end
+
+function M.is_addon_enabled(player_name, id)
+    -- Kept for main_gui compatibility; this now means "skill attached".
+    if not M.skills[id] then return false end
+    return M.is_skill_attached(player_name, id)
 end
 
 function M.set_player_addon(player_name, id, enabled)
     -- Kept for main_gui compatibility; this now toggles Lua-first skills only.
+    if not player_name or player_name == "" then return false, "missing player" end
+    if not M.skills[id] then return false, "unknown skill: " .. tostring(id) end
     M.player_skill_overrides[player_name] = M.player_skill_overrides[player_name] or {}
     M.player_skill_overrides[player_name][id] = enabled == true
     return true
+end
+
+function M.attach_skill_to_player(target_name, id, enabled)
+    -- Root-facing explicit attach/detach primitive. This intentionally avoids
+    -- the old addon/traffic-light wording: a skill is either attached to the
+    -- target's agent session or it is not.
+    return M.set_player_addon(target_name, id, enabled ~= false)
+end
+
+function M.detach_skill_from_player(target_name, id)
+    return M.set_player_addon(target_name, id, false)
 end
 
 function M.reset_player_addons(player_name)
@@ -236,6 +261,8 @@ function M.get_status(player_name)
         local available = is_skill_available(skill)
         local has = has_priv(player_name, required)
         local enabled = M.is_addon_enabled(player_name, id)
+        local manual = M.has_player_override(player_name, id)
+        local manually_attached = manual and enabled
         out[#out + 1] = {
             id = id,
             label = skill.label or skill.name or id,
@@ -243,8 +270,11 @@ function M.get_status(player_name)
             available = available,
             has_priv = has,
             enabled = enabled,
+            attached = enabled,
+            manual = manual,
+            manual_attached = manually_attached,
             default_enabled = skill.default_enabled == true,
-            effective = available and has and enabled,
+            effective = available and enabled and (has or manually_attached),
             tool_count = skill.tool_count or (type(skill.api) == "table" and #skill.api or 0),
             required_priv = required,
             version = skill.version or "0.1.0",

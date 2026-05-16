@@ -267,6 +267,172 @@ local function restore_hook(player_name, snap)
     return true, nil
 end
 
+
+-- ===========================================================================
+-- Agent-friendly high-level builders
+-- ===========================================================================
+
+local function clamp_int(v, default, min_v, max_v)
+    v = tonumber(v or default) or default
+    v = math.floor(v)
+    if min_v and v < min_v then v = min_v end
+    if max_v and v > max_v then v = max_v end
+    return v
+end
+
+local function place_node(name, x, y, z)
+    core.set_node({x = x, y = y, z = z}, {name = name})
+end
+
+local function fill_box(p1, p2, node, hollow)
+    local minx, maxx = math.min(p1.x, p2.x), math.max(p1.x, p2.x)
+    local miny, maxy = math.min(p1.y, p2.y), math.max(p1.y, p2.y)
+    local minz, maxz = math.min(p1.z, p2.z), math.max(p1.z, p2.z)
+    local count = 0
+    for x = minx, maxx do
+        for y = miny, maxy do
+            for z = minz, maxz do
+                local boundary = x == minx or x == maxx or y == miny or y == maxy or z == minz or z == maxz
+                if not hollow or boundary then
+                    place_node(node, x, y, z)
+                    count = count + 1
+                end
+            end
+        end
+    end
+    return count
+end
+
+local function centered_origin(args, player_name, width, length)
+    local p = make_pos(args, player_name)
+    return {
+        x = p.x - math.floor(width / 2),
+        y = p.y,
+        z = p.z - math.floor(length / 2),
+    }
+end
+
+local function resolve_material(args, key, default_node, label)
+    local node, err = resolve_node(tostring(args[key] or default_node))
+    if not node then return nil, (label or key) .. ": " .. err end
+    return node, nil
+end
+
+local function build_platform(args, player_name)
+    local width = clamp_int(args.width or args.w, 7, 1, 64)
+    local length = clamp_int(args.length or args.l, 7, 1, 64)
+    local base = centered_origin(args, player_name, width, length)
+    local floor, ferr = resolve_material(args, "node", "default:stone", "platform")
+    if not floor then return {ok=false, message=ferr} end
+    local count = fill_box(base, {x=base.x + width - 1, y=base.y, z=base.z + length - 1}, floor, false)
+    return {ok=true, message=string.format("Platform %dx%d %s centered near (%d,%d,%d): %d nodes", width, length, floor, base.x, base.y, base.z, count)}
+end
+
+local function build_house(args, player_name)
+    local width  = clamp_int(args.width or args.w, 7, 3, 32)
+    local length = clamp_int(args.length or args.l, 7, 3, 32)
+    local height = clamp_int(args.height or args.h, 4, 3, 16)
+    local base = centered_origin(args, player_name, width, length)
+
+    local floor, ferr = resolve_material(args, "floor", "default:stone", "floor")
+    local wall,  werr = resolve_material(args, "wall",  args.node or "default:wood", "wall")
+    local roof,  rerr = resolve_material(args, "roof",  "default:cobble", "roof")
+    local glass, gerr = resolve_material(args, "window", "default:glass", "window")
+    if not floor then return {ok=false, message=ferr} end
+    if not wall then return {ok=false, message=werr} end
+    if not roof then return {ok=false, message=rerr} end
+    if not glass then return {ok=false, message=gerr} end
+
+    local count = 0
+    -- floor
+    count = count + fill_box(base, {x=base.x + width - 1, y=base.y, z=base.z + length - 1}, floor, false)
+
+    -- walls
+    for y = base.y + 1, base.y + height do
+        for x = base.x, base.x + width - 1 do
+            for z = base.z, base.z + length - 1 do
+                local boundary = x == base.x or x == base.x + width - 1 or z == base.z or z == base.z + length - 1
+                if boundary then
+                    local front = z == base.z
+                    local door = front and x == base.x + math.floor(width / 2) and (y == base.y + 1 or y == base.y + 2)
+                    local window = (y == base.y + 2) and (
+                        (front and (x == base.x + 1 or x == base.x + width - 2)) or
+                        (z == base.z + length - 1 and (x == base.x + 1 or x == base.x + width - 2))
+                    )
+                    if door then
+                        place_node("air", x, y, z)
+                    elseif window then
+                        place_node(glass, x, y, z)
+                        count = count + 1
+                    else
+                        place_node(wall, x, y, z)
+                        count = count + 1
+                    end
+                else
+                    place_node("air", x, y, z)
+                end
+            end
+        end
+    end
+
+    -- roof slab/overhang
+    count = count + fill_box(
+        {x=base.x - 1, y=base.y + height + 1, z=base.z - 1},
+        {x=base.x + width, y=base.y + height + 1, z=base.z + length},
+        roof, false
+    )
+
+    return {ok=true, message=string.format("House %dx%dx%d built with %s/%s/%s near (%d,%d,%d): %d nodes", width, height, length, floor, wall, roof, base.x, base.y, base.z, count)}
+end
+
+local function build_hut(args, player_name)
+    args = args or {}
+    args.width = args.width or args.w or 5
+    args.length = args.length or args.l or 5
+    args.height = args.height or args.h or 3
+    args.floor = args.floor or "default:stone"
+    args.wall = args.wall or args.node or "default:wood"
+    args.roof = args.roof or "default:cobble"
+    return build_house(args, player_name)
+end
+
+local function build_tower(args, player_name)
+    local radius = clamp_int(args.radius or args.r, 3, 2, 16)
+    local height = clamp_int(args.height or args.h, 10, 4, 64)
+    local pos = make_pos(args, player_name)
+    local wall, werr = resolve_material(args, "wall", args.node or "default:cobble", "wall")
+    local floor, ferr = resolve_material(args, "floor", "default:stone", "floor")
+    local glass, gerr = resolve_material(args, "window", "default:glass", "window")
+    if not wall then return {ok=false, message=werr} end
+    if not floor then return {ok=false, message=ferr} end
+    if not glass then return {ok=false, message=gerr} end
+
+    local count = 0
+    for y = pos.y, pos.y + height do
+        for x = pos.x - radius, pos.x + radius do
+            for z = pos.z - radius, pos.z + radius do
+                local dx, dz = x - pos.x, z - pos.z
+                local d2 = dx * dx + dz * dz
+                local outer = d2 <= radius * radius
+                local inner = d2 < (radius - 1) * (radius - 1)
+                if outer and (not inner or y == pos.y or y == pos.y + height) then
+                    if y > pos.y + 1 and y < pos.y + height and (y % 3 == 0) and (math.abs(dx) == radius or math.abs(dz) == radius) then
+                        place_node(glass, x, y, z)
+                    elseif y == pos.y then
+                        place_node(floor, x, y, z)
+                    else
+                        place_node(wall, x, y, z)
+                    end
+                    count = count + 1
+                elseif inner then
+                    place_node("air", x, y, z)
+                end
+            end
+        end
+    end
+    return {ok=true, message=string.format("Tower radius=%d height=%d built at (%d,%d,%d): %d nodes", radius, height, pos.x, pos.y, pos.z, count)}
+end
+
 -- ===========================================================================
 -- Tool runner
 -- ===========================================================================
@@ -279,6 +445,18 @@ local function run_tool(tool_name, args, player_name)
     end
     if not worldedit then
         return {ok=false, message="worldedit_agent: WorldEdit is not loaded"}
+    end
+
+    -- ── Agent-friendly high-level builders ─────────────────────────
+
+    if tool_name == "build_platform" then
+        return build_platform(args, player_name)
+    elseif tool_name == "build_hut" then
+        return build_hut(args, player_name)
+    elseif tool_name == "build_house" then
+        return build_house(args, player_name)
+    elseif tool_name == "build_tower" then
+        return build_tower(args, player_name)
     end
 
     -- ── Selection ────────────────────────────────────────────
@@ -562,6 +740,15 @@ end
 -- ===========================================================================
 
 local TOOLS = {
+    -- High-level builders: preferred for natural-language building tasks
+    { name="build_hut",      description="Build a small centered hut at the player's position. Preferred for simple hut requests.",
+      parameters={width="integer optional", length="integer optional", height="integer optional", wall="node optional", floor="node optional", roof="node optional"} },
+    { name="build_house",    description="Build a centered house with floor, walls, roof, windows, door opening and cleared interior.",
+      parameters={width="integer optional", length="integer optional", height="integer optional", wall="node optional", floor="node optional", roof="node optional", window="node optional"} },
+    { name="build_tower",    description="Build a centered hollow round tower with windows.",
+      parameters={radius="integer optional", height="integer optional", wall="node optional", floor="node optional", window="node optional"} },
+    { name="build_platform", description="Build a centered flat platform at the player's position.",
+      parameters={width="integer optional", length="integer optional", node="node optional"} },
     -- Selection
     { name="set_pos1",      description="Set WorldEdit pos1 to absolute coords. Defaults to player pos if no x/y/z given.",
       parameters={x="integer (optional)", y="integer (optional)", z="integer (optional)"} },
@@ -685,7 +872,12 @@ local function do_register()
                     "  llm_connect.skills.worldedit_agent.run('tool_name', {arg=value}, player_name)",
                     "Do not omit player_name. Do not pass player_name as the first argument.",
                     "",
-                    "Common calls:",
+                    "Preferred high-level calls for natural language building tasks:",
+                    "  llm_connect.skills.worldedit_agent.run('build_hut', {}, player_name)",
+                    "  llm_connect.skills.worldedit_agent.run('build_house', {width=7,length=7,height=4,wall='default:wood',floor='default:stone',roof='default:cobble'}, player_name)",
+                    "  llm_connect.skills.worldedit_agent.run('build_tower', {radius=3,height=12,wall='default:cobble'}, player_name)",
+                    "",
+                    "Lower-level calls:",
                     "  llm_connect.skills.worldedit_agent.run('set_pos1', {x=0,y=0,z=0}, player_name)",
                     "  llm_connect.skills.worldedit_agent.run('set_pos2', {x=10,y=10,z=10}, player_name)",
                     "  llm_connect.skills.worldedit_agent.run('set_region', {node='default:stone'}, player_name)",

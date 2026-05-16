@@ -16,6 +16,7 @@ local core = core
 local M    = {}
 
 local function raw_priv(name, priv)
+    if type(name) ~= "string" or name == "" then return false end
     local p = core.get_player_privs(name) or {}
     return p[priv] == true
 end
@@ -76,7 +77,15 @@ function M.is_dev_scoped()
 end
 
 function M.root_is_unrestricted()
-    return true
+    return core.settings:get_bool("llm_root_agent_unrestricted", false)
+end
+
+function M.root_bypasses_safety_filters()
+    return core.settings:get_bool("llm_root_bypass_safety_filters", false)
+end
+
+function M.root_allows_startup_execution()
+    return core.settings:get_bool("llm_root_allow_startup_execution", false)
 end
 
 function M.get_capabilities(name)
@@ -145,8 +154,23 @@ function M.resolve_agent_execution(name, options)
         return denied_ctx("llm_agent", "agent")
     end
 
-    -- Agent actions are always sandboxed by default, even for llm_root.
-    -- Root may use the IDE/root execution path for unrestricted owner actions.
+    if M.is_root(name) and M.root_is_unrestricted() then
+        return {
+            profile = "llm_root",
+            purpose = "agent",
+            execution_mode = "unrestricted",
+            sandbox = false,
+            sandbox_enabled = false,
+            unrestricted = true,
+            can_persist = true,
+            bypass_safety_filters = M.root_bypasses_safety_filters(),
+            allow_startup_execution = M.root_allows_startup_execution(),
+        }
+    end
+
+    -- Agent actions are sandboxed by default, including for llm_root unless the
+    -- explicit root override above is enabled. Root still has sovereignty, but
+    -- it has to opt in through config instead of accidentally de-sandboxing chat.
     return {
         profile = M.is_root(name) and "llm_root" or "llm_agent",
         purpose = "agent",
@@ -155,6 +179,8 @@ function M.resolve_agent_execution(name, options)
         sandbox_enabled = true,
         unrestricted = false,
         can_persist = false,
+        bypass_safety_filters = false,
+        allow_startup_execution = false,
     }
 end
 

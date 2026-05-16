@@ -6,7 +6,10 @@ local M = {}
 
 local function wants_continue(result)
     if not result or not (result.success or result.ok) then return false end
-    if result.is_context_action == true then return true end
+    if result.is_context_action == true then
+        local rv = result.return_value
+        return type(rv) == "table" and rv.continue == true and rv.done ~= true
+    end
     local rv = result.return_value
     if type(rv) ~= "table" then return false end
     if rv.continue == true then return true end

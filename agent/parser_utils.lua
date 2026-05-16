@@ -114,14 +114,29 @@ local FORBIDDEN_PATTERNS = {
     {pat = "%f[%a_]dofile%s*%(", label = "dofile"},
     {pat = "%f[%a_]loadfile%s*%(", label = "loadfile"},
     {pat = "%f[%a_]loadstring%s*%(", label = "loadstring"},
+    -- Plain global load(...) is forbidden. Namespaced safe APIs such as
+    -- llm_connect.context.load(...) are handled by sanitize_allowed_host_api_calls().
     {pat = "%f[%a_]load%s*%(", label = "load"},
     {pat = "%f[%a_]setfenv%s*%(", label = "setfenv"},
     {pat = "%f[%a_]getfenv%s*%(", label = "getfenv"},
 }
 
+local function sanitize_allowed_host_api_calls(code)
+    -- The precheck scans source text, not the sandbox environment. Without this
+    -- allowlist, the global-load rule also catches safe method names such as
+    -- llm_connect.context.load('worldedit'). Keep the allowlist tiny and explicit.
+    code = code:gsub("llm_connect%s*%.%s*context%s*%.%s*load%s*%(", "__llmc_context_load(")
+    code = code:gsub("llm_connect%s*%.%s*context%s*%.%s*lookup%s*%(", "__llmc_context_lookup(")
+    code = code:gsub("llm_connect%s*%.%s*context%s*%.%s*get_section%s*%(", "__llmc_context_get_section(")
+    code = code:gsub("llm_connect%s*%.%s*context%s*%.%s*list_sections%s*%(", "__llmc_context_list_sections(")
+    code = code:gsub("llm_connect%s*%.%s*context%s*%.%s*keys%s*%(", "__llmc_context_keys(")
+    code = code:gsub("llm_connect%s*%.%s*context%s*%.%s*has%s*%(", "__llmc_context_has(")
+    return code
+end
+
 function M.contains_forbidden_patterns(code)
     local hits = {}
-    code = M.normalize_line_endings(code)
+    code = sanitize_allowed_host_api_calls(M.normalize_line_endings(code))
     for _, rule in ipairs(FORBIDDEN_PATTERNS) do
         if code:match(rule.pat) then hits[#hits + 1] = rule.label end
     end

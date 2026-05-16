@@ -133,8 +133,20 @@ function M.is_enabled(player_name, id)
     return registry_call("is_addon_enabled", false, player_name, id)
 end
 
+function M.is_attached(player_name, id)
+    return registry_call("is_skill_attached", false, player_name, id)
+end
+
 function M.set_enabled(player_name, id, enabled)
     return registry_call("set_player_addon", false, player_name, id, enabled)
+end
+
+function M.attach_to_player(target_name, id, enabled)
+    return registry_call("attach_skill_to_player", false, target_name, id, enabled ~= false)
+end
+
+function M.detach_from_player(target_name, id)
+    return registry_call("detach_skill_from_player", false, target_name, id)
 end
 
 function M.reset_player(player_name)

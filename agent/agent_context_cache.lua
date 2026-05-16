@@ -36,9 +36,12 @@ function M.observe_result(state, result)
     elseif type(rv.section) == "table" then
         remember_section(cache, rv.section.id, rv.section.title or rv.message, rv.section.content)
     elseif type(rv.sections) == "table" then
+        -- Search/list results contain summaries, not full manuals. Do not inject
+        -- summaries as if they were loaded context; that confused the agent into
+        -- thinking it had documentation it never loaded.
         for _, section in ipairs(rv.sections) do
-            if type(section) == "table" then
-                remember_section(cache, section.id, section.title or section.summary, section.content or section.summary)
+            if type(section) == "table" and type(section.content) == "string" and section.content ~= "" then
+                remember_section(cache, section.id, section.title or section.summary, section.content)
             end
         end
     elseif type(rv.content) == "string" and result.is_context_action == true then

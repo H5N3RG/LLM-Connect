@@ -26,6 +26,17 @@ local function get_policy()
     return _G.llm_connect and _G.llm_connect.policy
 end
 
+local function get_live_trace()
+    return _G.llm_connect and _G.llm_connect.live_trace or rawget(_G, "live_trace")
+end
+
+local function live_emit(category, player_name, message, data)
+    local trace = get_live_trace()
+    if trace and trace.emit then
+        pcall(trace.emit, category, player_name, message, data)
+    end
+end
+
 local function get_runtime_scripts()
     return _G.runtime_scripts or (_G.llm_connect and _G.llm_connect.runtime_scripts)
 end
@@ -46,6 +57,24 @@ local function is_llm_root(name)
     local policy = get_policy()
     if policy and policy.is_root then return policy.is_root(name) end
     return player_has_priv(name, "llm_root")
+end
+
+local function root_bypasses_safety_filters(name)
+    if not is_llm_root(name) then return false end
+    local policy = get_policy()
+    if policy and policy.root_bypasses_safety_filters then
+        return policy.root_bypasses_safety_filters()
+    end
+    return core.settings:get_bool("llm_root_bypass_safety_filters", false)
+end
+
+local function root_allows_startup_execution(name)
+    if not is_llm_root(name) then return false end
+    local policy = get_policy()
+    if policy and policy.root_allows_startup_execution then
+        return policy.root_allows_startup_execution()
+    end
+    return core.settings:get_bool("llm_root_allow_startup_execution", false)
 end
 
 local function can_use_agent_skills(name)
@@ -287,7 +316,8 @@ function M.precheck(code, player_name, options)
     local issues = {}
 
     local parser = get_parser()
-    if parser and parser.contains_forbidden_patterns then
+    local bypass_filters = options.bypass_safety_filters == true or root_bypasses_safety_filters(player_name)
+    if parser and parser.contains_forbidden_patterns and not bypass_filters then
         local forbidden, hits = parser.contains_forbidden_patterns(code)
         if forbidden then
             issues[#issues + 1] = "Forbidden host-access pattern(s): " .. table.concat(hits, ", ")
@@ -442,6 +472,12 @@ end
 function M.execute(player_name, code, options)
     options = options or {}
     local result = { success = false, ok = false }
+    live_emit("executor", player_name, "execute requested", {
+        purpose = options.purpose,
+        sandbox = options.sandbox,
+        required_priv = options.required_priv,
+        bytes = type(code) == "string" and #code or 0,
+    })
 
     if type(code) ~= "string" or code:match("^%s*$") then
         result.error = "No or empty code provided"
@@ -451,6 +487,18 @@ function M.execute(player_name, code, options)
     local parser = get_parser()
     if parser and options.skip_repair ~= true then
         code = parser.auto_repair_lua(code)
+    end
+
+    local root = is_llm_root(player_name)
+    local root_bypass_filters = root_bypasses_safety_filters(player_name)
+    local root_allow_startup = root_allows_startup_execution(player_name)
+
+    if root_bypass_filters then
+        options.bypass_safety_filters = true
+        options.allow_dangerous = true
+    end
+    if root_allow_startup then
+        options.allow_startup_execution = true
     end
 
     local runtime_scripts = get_runtime_scripts()
@@ -464,12 +512,14 @@ function M.execute(player_name, code, options)
 
     if classification.class == "dangerous" and options.allow_dangerous ~= true then
         result.error = "Blocked dangerous code: " .. table.concat(classification.issues or {}, "; ")
+        live_emit("precheck", player_name, result.error, { class = classification.class })
         return result
     end
 
     if classification.class == "startup_preferred" and options.allow_startup_execution ~= true then
         result.error = "Code contains startup-preferred registrations and was not executed transiently. Save it for startup or use root experimental execution."
         result.requires_restart = true
+        live_emit("precheck", player_name, result.error, { class = classification.class })
         return result
     end
 
@@ -485,7 +535,14 @@ function M.execute(player_name, code, options)
         exec_ctx = policy.resolve_ide_execution(player_name, options)
     end
 
-    local root = is_llm_root(player_name)
+    if exec_ctx and exec_ctx.bypass_safety_filters then
+        options.bypass_safety_filters = true
+        options.allow_dangerous = true
+    end
+    if exec_ctx and exec_ctx.allow_startup_execution then
+        options.allow_startup_execution = true
+    end
+
     local use_sandbox
     if exec_ctx and exec_ctx.sandbox ~= nil then
         use_sandbox = exec_ctx.sandbox
@@ -563,10 +620,19 @@ function M.execute(player_name, code, options)
         result.ok = true
         result.return_value = exec_res
         core.log("action", ("[core_executor] success by %s (sandbox=%s)"):format(tostring(player_name), tostring(use_sandbox)))
+        live_emit("executor", player_name, "execution success", {
+            sandbox = use_sandbox,
+            class = result.script_class,
+            output = result.output,
+        })
     else
         result.error = "Runtime error: " .. tostring(exec_res)
         result.traceback = tostring(exec_res)
         core.log("warning", ("[core_executor] execution failed for %s: %s"):format(tostring(player_name), result.error))
+        live_emit("runtime", player_name, result.error, {
+            sandbox = use_sandbox,
+            class = result.script_class,
+        })
     end
 
     if classification and classification.class and classification.class ~= "runtime_safe" then

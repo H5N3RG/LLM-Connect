@@ -178,6 +178,9 @@ core.register_privilege("llm_root", {
 
 local prompt_trace = load_module(AGENT_DIR .. "/agent_trace.lua", "prompt_trace", false)
 _G.llm_connect.prompt_trace = prompt_trace
+local live_trace = load_module(AGENT_DIR .. "/live_trace.lua", "live_trace", false)
+_G.llm_connect.live_trace = live_trace
+_G.live_trace = live_trace
 _G.prompt_trace = prompt_trace
 if prompt_trace then
     core.log("action", "[llm_connect] prompt tracing hook installed (llm_trace_prompt_log controls writes)")
@@ -354,6 +357,73 @@ core.register_chatcommand("llm_health", {
         local report = h and h.report_text and h.report_text() or "subsystem health unavailable"
         core.chat_send_player(name, "[LLM Health]\n" .. report)
         return true
+    end,
+})
+
+core.register_chatcommand("llm_skill_list", {
+    description = "List LLM Connect skills for a player (root)",
+    params      = "[player]",
+    privs       = { llm_root = true },
+    func = function(name, param)
+        local target = (param and param:match("^%s*(%S+)%s*$")) or name
+        if target == "" then target = name end
+        local skills = _G.llm_connect and (_G.llm_connect.skills or _G.llm_connect.skills_subsystem)
+        if not skills or not skills.get_status then
+            core.chat_send_player(name, "[LLM Skills] unavailable")
+            return false, "skills unavailable"
+        end
+        local lines = {"[LLM Skills for " .. target .. "]"}
+        for _, s in ipairs(skills.get_status(target) or {}) do
+            lines[#lines + 1] = string.format("%s  %s  priv=%s  available=%s",
+                s.enabled and "ATTACHED" or "DETACHED",
+                tostring(s.id), tostring(s.required_priv), tostring(s.available))
+        end
+        core.chat_send_player(name, table.concat(lines, "\n"))
+        return true
+    end,
+})
+
+core.register_chatcommand("llm_trace", {
+    description = "Open the LLM Connect live trace panel (root)",
+    privs       = { llm_root = true },
+    func = function(name, _)
+        local trace = _G.llm_connect and _G.llm_connect.live_trace
+        if trace and trace.show_formspec then
+            trace.show_formspec(name)
+            return true
+        end
+        return false, "live trace unavailable"
+    end,
+})
+
+core.register_chatcommand("llm_skill_attach", {
+    description = "Attach or detach an LLM Connect skill for a player (root)",
+    params      = "<player> <skill_id> [on|off]",
+    privs       = { llm_root = true },
+    func = function(name, param)
+        local target, skill_id, mode = tostring(param or ""):match("^%s*(%S+)%s+(%S+)%s*(%S*)%s*$")
+        if not target or not skill_id then
+            return false, "Usage: /llm_skill_attach <player> <skill_id> [on|off]"
+        end
+        local enabled = not (mode == "off" or mode == "false" or mode == "0" or mode == "detach")
+        local skills = _G.llm_connect and (_G.llm_connect.skills or _G.llm_connect.skills_subsystem)
+        if not skills then return false, "skills unavailable" end
+        local ok, err
+        if enabled then
+            if skills.attach_to_player then ok, err = skills.attach_to_player(target, skill_id, true)
+            elseif skills.set_enabled then ok, err = skills.set_enabled(target, skill_id, true) end
+        else
+            if skills.detach_from_player then ok, err = skills.detach_from_player(target, skill_id)
+            elseif skills.set_enabled then ok, err = skills.set_enabled(target, skill_id, false) end
+        end
+        if ok then
+            core.chat_send_player(name, "[LLM Skills] " .. skill_id .. " " .. (enabled and "attached to " or "detached from ") .. target)
+            if target ~= name then
+                core.chat_send_player(target, "[LLM Skills] " .. skill_id .. " " .. (enabled and "attached" or "detached") .. " by root")
+            end
+            return true
+        end
+        return false, tostring(err or "failed")
     end,
 })
 

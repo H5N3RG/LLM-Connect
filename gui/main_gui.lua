@@ -478,7 +478,7 @@ function M.show_skills(name)
     local y = HDR_H + PAD
 
     -- ── Info row ─────────────────────────────────────────────
-    table.insert(fs, string.format("label[%.2f,%.2f;Toggle Lua-first skills for this session. Greyed = unavailable or missing privilege.]",
+    table.insert(fs, string.format("label[%.2f,%.2f;Attach Lua-first skills to this player session. Root can manage player attachments in Config → Agent.]",
         PAD, y + 0.05))
     y = y + INFO_H
 
@@ -501,38 +501,38 @@ function M.show_skills(name)
             local sorigin = tostring(s.origin or "internal")
             local stool_count = tonumber(s.tool_count) or 0
 
-            -- Card background — colour-coded by state
+            -- Card background — deliberately low-drama, not a traffic light.
             local card_bg
-            if not s.available or not s.has_priv then
-                card_bg = "#1a1a1a"   -- greyed: dep missing or no priv
+            if not s.available or (not s.has_priv and not s.manual_attached) then
+                card_bg = "#171717"   -- unavailable / missing priv
             elseif s.effective then
-                card_bg = "#0d1a0d"   -- green tint: active
+                card_bg = "#182018"   -- attached
             else
-                card_bg = "#1a1010"   -- red tint: disabled by player
+                card_bg = "#1a1a1f"   -- available but detached
             end
             table.insert(fs, string.format("box[%.2f,%.2f;%.2f,%.2f;%s]",
                 tx, ty, col_w, ROW_H, card_bg))
 
-            -- Left accent bar (3px wide) colour = state
-            local bar_color = s.effective and "#2a6a2a"
-                or (not s.available or not s.has_priv) and "#444444"
-                or "#6a2a2a"
+            -- Left accent bar: subtle state hint, not red/green alarm UI.
+            local bar_color = s.effective and "#4a6a4a"
+                or (not s.available or (not s.has_priv and not s.manual_attached)) and "#3a3a3a"
+                or "#4a4a66"
             table.insert(fs, string.format("box[%.2f,%.2f;0.06,%.2f;%s]",
                 tx, ty, ROW_H, bar_color))
 
             -- Toggle button
             local btn_name  = "addon_toggle_" .. sid
             local toggle_w  = 1.1
-            local btn_off   = not s.available or not s.has_priv
+            local btn_off   = not s.available or (not s.has_priv and not s.manual_attached)
             local toggle_bg = btn_off    and "#252525"
-                or s.enabled             and "#1a3a1a"
-                or "#2a1a1a"
-            local toggle_fg = btn_off    and "#555555"
-                or s.enabled             and "#aaffaa"
-                or "#aa4444"
+                or s.enabled             and "#263026"
+                or "#242436"
+            local toggle_fg = btn_off    and "#666666"
+                or s.enabled             and "#d0ffd0"
+                or "#bbbbff"
             local toggle_lbl = btn_off and "N/A"
-                or s.enabled            and "● ON"
-                or "○ OFF"
+                or s.enabled            and "ATTACHED"
+                or "DETACHED"
             table.insert(fs, string.format("style[%s;bgcolor=%s;textcolor=%s]",
                 btn_name, toggle_bg, toggle_fg))
             table.insert(fs, string.format("button[%.2f,%.2f;%.2f,%.2f;%s;%s]",
@@ -543,7 +543,7 @@ function M.show_skills(name)
             local lx = tx + 0.1 + toggle_w + 0.15
 
             -- Name line
-            local name_color = (not s.available or not s.has_priv) and "#666666" or "#e0e0e0"
+            local name_color = (not s.available or (not s.has_priv and not s.manual_attached)) and "#666666" or "#e0e0e0"
             table.insert(fs, string.format("label[%.2f,%.2f;%s]",
                 lx, ty + 0.18,
                 core.colorize(name_color, core.formspec_escape(slabel))))
@@ -563,7 +563,9 @@ function M.show_skills(name)
             if not s.available then
                 meta = meta .. "  " .. core.colorize("#aa4422", "dep")
             end
-            if not s.has_priv then
+            if s.manual_attached then
+                meta = meta .. "  " .. core.colorize("#88aa88", "root")
+            elseif not s.has_priv then
                 meta = meta .. "  " .. core.colorize("#aa6622", "priv")
             end
             table.insert(fs, string.format("label[%.2f,%.2f;%s]",
@@ -588,9 +590,9 @@ function M.show_skills(name)
     local btn_y = H - BTN_H - PAD
     table.insert(fs, string.format("box[0,%.2f;%.2f,%.2f;#111111]",
         btn_y - PAD * 0.5, W, BTN_H + PAD * 1.5))
-    table.insert(fs, string.format("button[%.2f,%.2f;3.2,%.2f;addons_reset;↺ Reset to Defaults]",
+    table.insert(fs, string.format("button[%.2f,%.2f;3.2,%.2f;addons_reset;↺ Reset Attachments]",
         PAD, btn_y, BTN_H))
-    table.insert(fs, "tooltip[addons_reset;Clear per-player overrides — global defaults apply again]")
+    table.insert(fs, "tooltip[addons_reset;Clear per-player skill attachments — global defaults apply again]")
 
     core.show_formspec(name, "llm_connect:main_addons", table.concat(fs))
 end

@@ -13,8 +13,9 @@
 local core = core
 local M = {}
 
-M.version = "0.1.0-dev"
+M.version = "0.2.0-dev"
 M.sections = M.sections or {}
+M.aliases = M.aliases or {}
 
 local function trim(s)
     s = tostring(s or "")
@@ -28,6 +29,15 @@ local function normalize_id(id)
         return nil, "invalid context section id: " .. id
     end
     return id
+end
+
+local function normalize_alias(alias)
+    alias = trim(alias):lower()
+    if alias == "" then return nil, "missing alias" end
+    if not alias:match("^[%w_%-%.:/]+$") then
+        return nil, "invalid context alias: " .. alias
+    end
+    return alias
 end
 
 local function has_priv(player_name, priv)
@@ -117,6 +127,94 @@ function M.unregister_section(id)
     if not id then return false, "missing id" end
     M.sections[id] = nil
     return true
+end
+
+function M.register_alias(alias, id)
+    local a, aerr = normalize_alias(alias)
+    if not a then return false, aerr end
+    local sid, serr = normalize_id(id)
+    if not sid then return false, serr end
+    M.aliases[a] = sid
+    return true, sid
+end
+
+function M.register_aliases(map)
+    if type(map) ~= "table" then return false, "alias map must be a table" end
+    for alias, id in pairs(map) do
+        M.register_alias(alias, id)
+    end
+    return true
+end
+
+function M.resolve_id(key)
+    key = trim(key or "")
+    if key == "" then return nil, "missing context key" end
+    if M.sections[key] then return key, nil, "section" end
+    local alias = key:lower()
+    if M.aliases[alias] then return M.aliases[alias], nil, "alias" end
+    return nil, "unknown context key or alias: " .. key
+end
+
+function M.has(player_name, key)
+    local id = M.resolve_id(key)
+    local section = id and M.sections[id] or nil
+    return {
+        ok = section ~= nil and section_allowed(section, player_name),
+        key = tostring(key or ""),
+        id = id,
+        message = section and ("Context key exists: " .. tostring(id)) or ("Context key missing: " .. tostring(key or "")),
+    }
+end
+
+function M.keys(player_name, opts)
+    opts = opts or {}
+    local sections = M.list_sections(player_name, opts).sections or {}
+    local aliases = {}
+    for alias, id in pairs(M.aliases) do
+        local section = M.sections[id]
+        if section_allowed(section, player_name) then
+            aliases[#aliases + 1] = { alias = alias, id = id }
+        end
+    end
+    table.sort(aliases, function(a, b) return a.alias < b.alias end)
+    return {
+        ok = true,
+        count = #sections,
+        sections = sections,
+        aliases = aliases,
+        message = "Context keys available: " .. tostring(#sections) .. " sections, " .. tostring(#aliases) .. " aliases",
+    }
+end
+
+function M.lookup(player_name, key, args)
+    local id, err, kind = M.resolve_id(key)
+    if not id then
+        return { ok = false, key = tostring(key or ""), message = err }
+    end
+    local res = M.get_section(player_name, id, args or {})
+    res.key = tostring(key or "")
+    res.resolved_id = id
+    res.resolved_by = kind
+    return res
+end
+
+-- Friendly alias for agents: load accepts exact ids and glossary aliases.
+function M.load(player_name, key, args)
+    return M.lookup(player_name, key, args or {})
+end
+
+function M.search_first(player_name, query, opts)
+    local res = M.search(player_name, query, opts or {})
+    local first = res.sections and res.sections[1]
+    if not first or not first.id then
+        return { ok = false, query = tostring(query or ""), message = "No context search hit" }
+    end
+    local loaded = M.get_section(player_name, first.id, opts and opts.args or {})
+    loaded.query = tostring(query or "")
+    loaded.search_score = first.score
+    loaded.resolved_id = first.id
+    loaded.resolved_by = "search_first"
+    return loaded
 end
 
 function M.list_sections(player_name, opts)
@@ -223,8 +321,18 @@ end
 function M.make_sandbox_proxy(player_name)
     local function as_context_step(res)
         if type(res) == "table" then
-            res.done = false
-            res.continue = true
+            local has_content = type(res.content) == "string" and res.content ~= ""
+            local has_hits = type(res.sections) == "table" and #res.sections > 0
+            -- Context loading is an intermediate step only when it actually
+            -- returns usable content/hits. Failed lookups and empty searches
+            -- should not burn agent iterations.
+            if res.ok ~= false and (has_content or has_hits) then
+                res.done = false
+                res.continue = true
+            else
+                res.done = true
+                res.continue = false
+            end
             if not res.message or res.message == "" then
                 res.message = "Context lookup completed"
             end
@@ -233,11 +341,29 @@ function M.make_sandbox_proxy(player_name)
     end
 
     return {
+        keys = function(opts)
+            return as_context_step(M.keys(player_name, opts or {}))
+        end,
+        aliases = function(opts)
+            return as_context_step(M.keys(player_name, opts or {}))
+        end,
+        has = function(key)
+            return as_context_step(M.has(player_name, key))
+        end,
+        lookup = function(key, args)
+            return as_context_step(M.lookup(player_name, key, args or {}))
+        end,
+        load = function(key, args)
+            return as_context_step(M.load(player_name, key, args or {}))
+        end,
         list_sections = function(opts)
             return as_context_step(M.list_sections(player_name, opts or {}))
         end,
         search = function(query, opts)
             return as_context_step(M.search(player_name, query, opts or {}))
+        end,
+        search_first = function(query, opts)
+            return as_context_step(M.search_first(player_name, query, opts or {}))
         end,
         get_section = function(id, args)
             return as_context_step(M.get_section(player_name, id, args or {}))
@@ -260,10 +386,12 @@ local function register_builtin_sections()
         content = table.concat({
             "Use llm_connect.context when you need details that are not in the compact system prompt.",
             "Available calls inside lua_action:",
-            "  local sections = llm_connect.context.list_sections()",
-            "  local hits = llm_connect.context.search('worldedit cube node')",
-            "  local doc = llm_connect.context.get_section('skills.worldedit_agent')",
-            "Return {done=false, continue=true, message='Loaded context: ...'} when a context lookup is needed before acting.",
+            "  local doc = llm_connect.context.load('worldedit') -- alias for skills.worldedit_agent",
+            "  local doc = llm_connect.context.load('skills.worldedit_agent') -- exact section id",
+            "  local keys = llm_connect.context.keys() -- sections plus glossary aliases",
+            "  local hits = llm_connect.context.search('worldedit cube node') -- fallback only; returns {ok,count,sections={...}}",
+            "Prefer load()/lookup() with exact ids or glossary aliases. Use search() only if no alias/id is known.",
+            "Return the loaded context table directly, or return {done=false, continue=true, message='Loaded context: ...'} before acting.",
             "Do not guess complex APIs, server state, node names, or skill arguments when a context section can be requested first.",
         }, "\n"),
     })
@@ -360,6 +488,23 @@ local function register_builtin_sections()
         end,
     })
 end
+
+M.register_aliases({
+    api = "luanti.safe_core",
+    core = "luanti.safe_core",
+    safe_core = "luanti.safe_core",
+    server = "server.info",
+    player = "server.info",
+    position = "server.info",
+    nodes = "luanti.registered_nodes.preview",
+    node_registry = "luanti.registered_nodes.preview",
+    materials = "luanti.registered_nodes.preview",
+    worldedit = "skills.worldedit_agent",
+    worldedit_agent = "skills.worldedit_agent",
+    building = "skills.worldedit_agent",
+    commands = "skills.command_agent",
+    command_agent = "skills.command_agent",
+})
 
 register_builtin_sections()
 

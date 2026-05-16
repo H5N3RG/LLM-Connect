@@ -76,6 +76,18 @@ llm_agent_enabled        (Enable agent mode globally)                 bool   tru
 # reaches this limit.
 llm_agent_max_iterations (Max agent loop iterations)                  int    8      1     32
 
+# Root-only escape hatches for local owner/developer workflows. Keep disabled
+# on public servers unless you fully trust every llm_root user.
+llm_root_agent_unrestricted       (Allow llm_root agent actions to run unrestricted) bool false
+llm_root_bypass_safety_filters    (Allow llm_root to bypass Lua precheck host-access filters) bool false
+llm_root_allow_startup_execution  (Allow llm_root to execute startup-preferred code transiently) bool false
+
+# Root-only live trace stream into the in-game chat log. This is for active
+# development/debugging and can be noisy. Raw Lua action display is separate.
+llm_live_trace_chat       (Stream LLM Connect debug trace to root chat) bool false
+llm_live_trace_show_lua   (Include raw lua_action code in live trace) bool false
+llm_live_trace_verbosity  (Live trace verbosity) enum normal quiet,normal,verbose
+llm_live_trace_categories (Live trace categories, comma-separated or all) string all
 
 
 # === Smart Lua IDE ===

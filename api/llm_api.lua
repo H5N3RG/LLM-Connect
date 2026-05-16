@@ -172,6 +172,18 @@ local function get_language_instruction()
     return language_instruction_cache
 end
 
+local function get_live_trace()
+    local root = rawget(_G, "llm_connect")
+    return root and root.live_trace or rawget(_G, "live_trace")
+end
+
+local function live_emit(category, player_name, message, data)
+    local trace = get_live_trace()
+    if trace and trace.emit then
+        pcall(trace.emit, category, player_name, message, data)
+    end
+end
+
 -- ===========================================================================
 -- Request
 -- ===========================================================================
@@ -224,6 +236,12 @@ function M.request(messages, callback, options)
         stream = tostring(body_table.stream == true),
         timeout = tostring(options.timeout or cfg.timeout),
     }
+    live_emit("request", options.actor or options.player_name, "LLM request", {
+        mode = trace_meta.mode,
+        model = trace_meta.model,
+        messages = trace_meta.message_count,
+        timeout = trace_meta.timeout,
+    })
     if trace and trace.log_request then
         pcall(trace.log_request, trace_meta, body_table, body)
     end
@@ -256,6 +274,10 @@ function M.request(messages, callback, options)
                     err = raw
                 end
             end
+            live_emit("response", options.actor or options.player_name, "HTTP failure: " .. tostring(err), {
+                code = result.code,
+                timeout = result.timeout,
+            })
             if trace and trace.log_error_response then
                 pcall(trace.log_error_response, trace_meta, {
                     succeeded = result.succeeded,
@@ -319,6 +341,14 @@ function M.request(messages, callback, options)
                             and response.choices[1].finish_reason,
             usage         = response.usage,
         }
+
+        live_emit("response", options.actor or options.player_name,
+            "LLM response " .. tostring(ret.success and "ok" or "empty"), {
+                finish_reason = ret.finish_reason,
+                completion_tokens = ret.usage and ret.usage.completion_tokens,
+                prompt_tokens = ret.usage and ret.usage.prompt_tokens,
+                preview = ret.content and tostring(ret.content):sub(1, 120) or "",
+            })
 
         if core.settings:get_bool("llm_debug") then
             core.log("action", "[llm_api DEBUG] Raw: " .. tostring(result.data or "no data"))

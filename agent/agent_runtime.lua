@@ -133,6 +133,25 @@ local function get_runtime()
     return type(root) == "table" and (root.runtime or root.core_executor) or rawget(_G, "core_executor")
 end
 
+local function get_live_trace()
+    local root = get_root()
+    return type(root) == "table" and root.live_trace or rawget(_G, "live_trace")
+end
+
+local function live_emit(category, player_name, message, data)
+    local trace = get_live_trace()
+    if trace and trace.emit then
+        pcall(trace.emit, category, player_name, message, data)
+    end
+end
+
+local function live_lua(player_name, code)
+    local trace = get_live_trace()
+    if trace and trace.emit_lua then
+        pcall(trace.emit_lua, player_name, code)
+    end
+end
+
 local function get_skills()
     local root = get_root()
     return type(root) == "table" and (root.skills or root.skills_subsystem or root.registry) or rawget(_G, "registry")
@@ -293,22 +312,27 @@ local function mark_context_continuation(result)
     if not result or not (result.success or result.ok) then return end
     if result.is_context_action ~= true then return end
 
-    -- Context lookups are intermediate agent steps, not final task answers.
-    -- Some models return the context proxy table directly, others wrap it into
-    -- their own {message=...} table, and weaker models may call the context API
-    -- but forget to set continue=true. Normalize all successful context actions
-    -- into a continuation request so the next iteration can use the loaded data.
+    -- Context lookups are intermediate only when they yielded useful context.
+    -- Empty/failed lookups should stop instead of creating search fog loops.
     if type(result.return_value) == "table" then
-        result.return_value.done = false
-        result.return_value.continue = true
-        if not result.return_value.message or result.return_value.message == "" then
-            result.return_value.message = "Context lookup completed"
+        local rv = result.return_value
+        local has_content = type(rv.content) == "string" and rv.content ~= ""
+        local has_hits = type(rv.sections) == "table" and #rv.sections > 0
+        if rv.ok ~= false and (has_content or has_hits) then
+            rv.done = false
+            rv.continue = true
+        else
+            rv.done = true
+            rv.continue = false
+        end
+        if not rv.message or rv.message == "" then
+            rv.message = "Context lookup completed"
         end
     else
         result.return_value = {
-            done = false,
-            continue = true,
-            message = "Context lookup completed",
+            done = true,
+            continue = false,
+            message = "Context lookup returned no structured result",
         }
     end
 end
@@ -344,6 +368,8 @@ local function execute_actions(player_name, actions)
 
     for i, action in ipairs(actions or {}) do
         local code = action.code or ""
+        live_emit("executor", player_name, "execute lua_action #" .. tostring(i), { bytes = #code })
+        live_lua(player_name, code)
         local result = runtime.execute({
             actor = player_name,
             origin = "agent.runtime",
@@ -364,6 +390,11 @@ local function execute_actions(player_name, actions)
         result.is_context_action = is_context_action_code(code)
         mark_context_continuation(result)
         result.message = action_result_message(result)
+        live_emit(result.ok and "executor" or "error", player_name, result.message, {
+            tool = result.tool,
+            script_class = result.script_class,
+            error = result.error,
+        })
         results[#results + 1] = result
     end
     return results
@@ -392,6 +423,10 @@ local function run_iteration(player_name, user_message, state, callbacks)
     end
 
     state.iteration = state.iteration + 1
+    live_emit("agent", player_name, "iteration " .. tostring(state.iteration) .. "/" .. tostring(state.max_iterations), {
+        active_skills = state.capability_snapshot and state.capability_snapshot.active_skill_count,
+        fingerprint = state.capability_snapshot and state.capability_snapshot.fingerprint,
+    })
     local api = get_api()
     local parser = get_parser()
     if not parser or not parser.split_dual_channel_response then
@@ -401,6 +436,10 @@ local function run_iteration(player_name, user_message, state, callbacks)
     if callbacks and callbacks.on_thought then
         callbacks.on_thought("thinking")
     end
+    live_emit("prompt", player_name, "building agent messages", {
+        iteration = state.iteration,
+        history = state.tool_history and #state.tool_history or 0,
+    })
 
     api.request(build_messages(player_name, user_message, state), function(response)
         if state.cancelled then return fail(state, callbacks, "cancelled") end
@@ -413,6 +452,11 @@ local function run_iteration(player_name, user_message, state, callbacks)
         state_store.append_visible(state, visible)
 
         local actions = split.actions or {}
+        live_emit("parser", player_name, "dual-channel split", {
+            visible_chars = #visible,
+            actions = #actions,
+            finish_reason = response.finish_reason,
+        })
         local action_results = {}
 
         if #actions > 0 then
@@ -431,6 +475,7 @@ local function run_iteration(player_name, user_message, state, callbacks)
         local decision = middleware.decide_after_step(state, action_results, {
             retry = retry_policy,
         })
+        live_emit("middleware", player_name, "decision", decision)
         local continue = decision.continue == true
 
         if continue and state.iteration < state.max_iterations then
@@ -446,7 +491,7 @@ local function run_iteration(player_name, user_message, state, callbacks)
             iterations = state.iteration,
             raw = response.content,
         })
-    end, { timeout = cfg_timeout() })
+    end, { timeout = cfg_timeout(), mode = "agent", actor = player_name })
 end
 
 function M.run(player_name, message, options, callbacks)
@@ -471,6 +516,11 @@ function M.run(player_name, message, options, callbacks)
     end
 
     state = reset_state(player_name, message, options)
+    live_emit("agent", player_name, "run started", {
+        max_iterations = state.max_iterations,
+        active_skills = skill_count,
+        message = tostring(message),
+    })
     core.log("action", string.format(
         "[agent] dual-channel run started for %s | max_iterations=%d | active_skills=%d | message=%s",
         tostring(player_name), state.max_iterations, skill_count, tostring(message)
