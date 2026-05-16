@@ -413,3 +413,40 @@ Related subsystem/files:
 - `runtime/path_policy.lua`
 - `runtime/core_executor.lua`
 - `runtime/execution_policy.lua`
+
+## 13. Command Agent Time Change
+
+Required config/settings:
+
+- Player has `llm` and `llm_agent`.
+- `command_agent` is attached to the player.
+- LLM provider configured.
+- Optional for evidence: `llm_live_trace_chat = true`.
+
+In-game prompt/action:
+
+```text
+/llm set the time to 18000
+```
+
+Expected trace/log evidence:
+
+- The generated action should call either:
+  `llm_connect.skills.command_agent.set_time({ time = 18000 }, player_name)` or
+  `llm_connect.skills.command_agent.run('set_time', { time = 18000 }, player_name)`.
+- Fallback `run_chatcommand({ command = '/time 18000' }, player_name)` is
+  acceptable.
+- It must not call `core.set_time(18000)`.
+- Result table should contain `ok=true` and `success=true`.
+
+What failure means:
+
+- Command-agent context is stale, prompt text still suggests safe-core time
+  mutation, or the command facade is not exposed in the sandbox.
+
+Related subsystem/files:
+
+- `skills/command_agent/command_agent.lua`
+- `context/basic_context.lua`
+- `context/context_registry.lua`
+- `agent/agent_prompt_builder.lua`
