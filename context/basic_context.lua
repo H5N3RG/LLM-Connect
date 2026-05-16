@@ -312,6 +312,7 @@ local function build_lua_runtime_contract(player_name)
         '- Finish actions with: return { done = true, message = "short result" }',
         '- Ask for another action step only with: return { done = false, continue = true, message = "why" }',
         "- Do not register nodes/items/entities/craftitems during runtime; Luanti registrations are load-time only.",
+        "- Do not call core.set_time; use llm_connect.skills.command_agent.set_time({time=18000}, player_name) when command_agent is active.",
         "- Detailed skill/API/server docs are not injected by default. Use llm_connect.context.list_sections(), search(query), and get_section(id) when details are needed.",
     }
 

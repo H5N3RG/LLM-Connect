@@ -1,7 +1,7 @@
 # ===========================================================================
 # LLM Connect — Luanti Mod Settings
 # ===========================================================================
-# Version: 1.1.0-dev
+# Version: 1.2.0-dev
 # ===========================================================================
 
 
@@ -76,6 +76,11 @@ llm_agent_enabled        (Enable agent mode globally)                 bool   tru
 # reaches this limit.
 llm_agent_max_iterations (Max agent loop iterations)                  int    8      1     32
 
+# Maximum number of repair iterations after failed lua_action execution.
+# 0 disables repair retries. This is separate from llm_agent_max_iterations:
+# every repair retry still consumes one normal agent loop iteration.
+llm_agent_max_repair_retries (Max failed-action repair retries)       int    1      0     10
+
 # Root-only escape hatches for local owner/developer workflows. Keep disabled
 # on public servers unless you fully trust every llm_root user.
 llm_root_agent_unrestricted       (Allow llm_root agent actions to run unrestricted) bool false
@@ -98,13 +103,12 @@ llm_live_trace_categories (Live trace categories, comma-separated or all) string
 # live-reloaded; restart remains the supported activation path.
 llm_ide_hot_reload             (Enable IDE hot-reload button)                 bool  true
 
-# Auto-save the code buffer to a temp file whenever it changes.
-# Prevents work loss on crash or accidental IDE close.
-# TODO: not yet implemented — see smart_lua_ide/TODO.txt
-llm_ide_auto_save              (Auto-save code buffer on changes)             bool  true
+# Deprecated / not implemented in the current Lua-first IDE.
+# Kept only so old minetest.conf entries remain documented.
+llm_ide_auto_save              (DEPRECATED: Auto-save code buffer on changes) bool  false
 
-# Policy anchor for llm_dev sandbox scope.
-# Current runtime behavior keeps llm_dev sandboxed; llm_root stays unrestricted.
+# Deprecated policy anchor. Current runtime policy always keeps llm_dev
+# sandboxed; llm_root behavior is controlled by the root settings above.
 llm_ide_whitelist_enabled      (Scope llm_dev to sandboxed execution)         bool  true
 
 # Enables the root-only Trusted Worldmod persistence backend switch in the IDE.
@@ -112,10 +116,8 @@ llm_ide_whitelist_enabled      (Scope llm_dev to sandboxed execution)         bo
 # v1 supports Save + Validate semantics only; standalone worldmod hot reload is disabled.
 llm_ide_trusted_worldmod_backend (Enable Trusted Worldmod backend switch)      bool  true
 
-# Live AI suggestions while typing (Copilot-style).
-# Requires debounced globalstep + partial-code LLM call.
-# TODO: not yet implemented — see smart_lua_ide/TODO.txt
-llm_ide_live_suggestions       (Live AI suggestions while typing)             bool  false
+# Deprecated / not implemented in the current Lua-first IDE.
+llm_ide_live_suggestions       (DEPRECATED: Live AI suggestions while typing) bool  false
 
 # Send the last run output to the LLM in Generate and Auto-Fix calls.
 # Allows the model to see errors and output from the previous execution.

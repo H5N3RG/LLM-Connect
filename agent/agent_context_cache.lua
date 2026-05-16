@@ -26,7 +26,7 @@ end
 
 function M.observe_result(state, result)
     if not state or not result or not (result.success or result.ok) then return end
-    local rv = result.return_value
+    local rv = result.retrieved_context or result.return_value
     if type(rv) ~= "table" then return end
 
     local cache = ensure(state)

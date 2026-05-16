@@ -666,7 +666,8 @@ local function do_send(name, input, session)
             if s.effective then active_skill_count = active_skill_count + 1 end
         end
     end
-    local use_agent = can_agent(name) and agent ~= nil and active_skill_count > 0
+    local use_agent = core.settings:get_bool("llm_agent_enabled", true) ~= false
+        and can_agent(name) and agent ~= nil and active_skill_count > 0
 
     if use_agent then
         table.insert(session.history, { role = "user", content = input, mode = "agent" })

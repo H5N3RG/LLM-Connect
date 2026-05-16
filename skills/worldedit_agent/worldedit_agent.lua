@@ -66,7 +66,7 @@ local function resolve_node(node_str)
         table.insert(candidates, "default:" .. node)
     end
     table.insert(candidates, node .. "_source")
-    table.insert(candidates, node:gsub("_flowing$", "_source"))
+    table.insert(candidates, (node:gsub("_flowing$", "_source")))
 
     local direct_alias = NODE_ALIASES[node]
     if direct_alias then table.insert(candidates, 1, direct_alias) end
@@ -431,6 +431,41 @@ local function build_tower(args, player_name)
         end
     end
     return {ok=true, message=string.format("Tower radius=%d height=%d built at (%d,%d,%d): %d nodes", radius, height, pos.x, pos.y, pos.z, count)}
+end
+
+local function compat_set_node(pos, node_name)
+    if type(pos) ~= "table" then
+        return {ok=false, message="set_node: pos must be {x=..., y=..., z=...}"}
+    end
+    local x, y, z = tonumber(pos.x), tonumber(pos.y), tonumber(pos.z)
+    if not x or not y or not z then
+        return {ok=false, message="set_node: pos requires numeric x/y/z"}
+    end
+    local node, err = resolve_node(tostring(node_name or "air"))
+    if not node then return {ok=false, message="set_node: " .. err} end
+    core.set_node({x=math.floor(x), y=math.floor(y), z=math.floor(z)}, {name=node})
+    return {ok=true, message=string.format("Set node %s at (%d,%d,%d)", node, math.floor(x), math.floor(y), math.floor(z))}
+end
+
+local function compat_set_nodes(args)
+    args = args or {}
+    if type(args) ~= "table" then
+        return {ok=false, message="set_nodes: args must be a table"}
+    end
+    local p1 = args.pos1 or args.p1 or args.from
+    local p2 = args.pos2 or args.p2 or args.to
+    if type(p1) ~= "table" or type(p2) ~= "table" then
+        return {ok=false, message="set_nodes: pos1 and pos2 are required"}
+    end
+    local node, err = resolve_node(tostring(args.node or args.node_name or "air"))
+    if not node then return {ok=false, message="set_nodes: " .. err} end
+    local count = fill_box(
+        {x=math.floor(tonumber(p1.x) or 0), y=math.floor(tonumber(p1.y) or 0), z=math.floor(tonumber(p1.z) or 0)},
+        {x=math.floor(tonumber(p2.x) or 0), y=math.floor(tonumber(p2.y) or 0), z=math.floor(tonumber(p2.z) or 0)},
+        node,
+        args.hollow == true or args.hollow == "true"
+    )
+    return {ok=true, message=string.format("Set %d nodes to %s", count, node), data={nodes=count}}
 end
 
 -- ===========================================================================
@@ -851,6 +886,16 @@ local function do_register()
             local tool_name, args, player_name = normalize_run_args(a, b, c)
             return run_tool(tool_name, args or {}, player_name)
         end,
+        set_node = function(pos, node_name)
+            -- Compatibility for common model mistakes. Prefer run('cube'...) or
+            -- run('set_region'...) for bulk work.
+            return compat_set_node(pos, node_name)
+        end,
+        set_nodes = function(args)
+            -- Compatibility for common model mistakes. Prefer
+            -- run('set_region', {node=...}, player_name) after setting pos1/pos2.
+            return compat_set_nodes(args or {})
+        end,
         get_context = get_context,
         snapshot = snapshot_hook,
         restore = restore_hook,
@@ -884,6 +929,7 @@ local function do_register()
                     "  llm_connect.skills.worldedit_agent.run('clear_region', {}, player_name)",
                     "  llm_connect.skills.worldedit_agent.run('cube', {width=5,height=3,length=5,node='default:stone',hollow=false}, player_name)",
                     "  llm_connect.skills.worldedit_agent.run('sphere', {radius=4,node='default:glass',hollow=true}, player_name)",
+                    "Avoid direct set_node/set_nodes helpers; they exist only as compatibility fallbacks.",
                     "",
                     "Safe common materials:",
                     "  default:stone, default:cobble, default:wood, default:tree, default:glass, default:brick, default:dirt_with_grass, air",

@@ -168,6 +168,7 @@ local function get_policy()
 end
 
 local function can_agent(player_name)
+    if core.settings:get_bool("llm_agent_enabled", true) == false then return false end
     local policy = get_policy()
     if policy and policy.can_agent then return policy.can_agent(player_name) end
     local privs = core.get_player_privs(player_name) or {}
@@ -318,6 +319,11 @@ local function mark_context_continuation(result)
         local rv = result.return_value
         local has_content = type(rv.content) == "string" and rv.content ~= ""
         local has_hits = type(rv.sections) == "table" and #rv.sections > 0
+        local recent = result.retrieved_context
+        if type(recent) == "table" then
+            has_content = has_content or (type(recent.content) == "string" and recent.content ~= "")
+            has_hits = has_hits or (type(recent.sections) == "table" and #recent.sections > 0)
+        end
         if rv.ok ~= false and (has_content or has_hits) then
             rv.done = false
             rv.continue = true
@@ -388,6 +394,13 @@ local function execute_actions(player_name, actions)
         result.index = i
         result.action_code = code
         result.is_context_action = is_context_action_code(code)
+        if result.is_context_action == true then
+            local root = get_root()
+            local registry = type(root) == "table" and (root.context_registry or (root.context_modules and root.context_modules.registry)) or nil
+            if registry and type(registry.consume_recent_context) == "function" then
+                result.retrieved_context = registry.consume_recent_context(player_name)
+            end
+        end
         mark_context_continuation(result)
         result.message = action_result_message(result)
         live_emit(result.ok and "executor" or "error", player_name, result.message, {

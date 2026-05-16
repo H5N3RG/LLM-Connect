@@ -588,6 +588,7 @@ function M.execute(player_name, code, options)
 
     local output_buffer = {}
     local old_print
+    local old_player_name = rawget(_G, "player_name")
 
     if use_sandbox then
         local env
@@ -604,10 +605,17 @@ function M.execute(player_name, code, options)
             for i = 1, select("#", ...) do parts[#parts + 1] = tostring(select(i, ...)) end
             output_buffer[#output_buffer + 1] = table.concat(parts, "\t")
         end
+        -- Root can opt agent actions out of the sandbox, but the agent contract
+        -- still promises player_name. Keep this scoped to the executed chunk so
+        -- direct llm_connect.context.load('...') calls can resolve privileges.
+        rawset(_G, "player_name", player_name)
     end
 
     local ok, exec_res = xpcall(function() return func() end, debug.traceback)
-    if not use_sandbox and old_print then print = old_print end
+    if not use_sandbox then
+        if old_print then print = old_print end
+        rawset(_G, "player_name", old_player_name)
+    end
 
     result.code = code
     result.output = table.concat(output_buffer, "\n")

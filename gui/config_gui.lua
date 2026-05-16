@@ -83,6 +83,24 @@ local function skill_field_name(id)
     return "skill_attach_" .. key
 end
 
+local function dropdown_change_index(value)
+    local text = tostring(value or "")
+    local idx = text:match("^CHG:(%d+)$") or text:match("^DCL:(%d+)$")
+    return tonumber(idx)
+end
+
+local function has_button_action(fields)
+    return fields.save
+        or fields.reload
+        or fields.test
+        or fields.close
+        or fields.quit
+        or fields.apply_skill_attach
+        or fields.reset_skill_attach
+        or fields.clear_trace_buffer
+        or fields.show_trace_panel
+end
+
 -- ===========================================================================
 -- Layout constants (shared)
 -- ===========================================================================
@@ -322,15 +340,22 @@ local function build_tab_agent(fs, name)
 
     y = sep(fs, y, "Loop control")
 
-    -- Max iterations
-    table.insert(fs, string.format("label[%.2f,%.2f;Max iterations per run (1–32):]", PAD, y))
+    -- Max iterations + repair retries
+    table.insert(fs, string.format("label[%.2f,%.2f;Max iterations per run (1-32):]", PAD, y))
+    table.insert(fs, string.format("label[%.2f,%.2f;Repair retries per run (0-10):]", W/2 + PAD, y))
     y = y + 0.45
     local max_iter = tostring(tonumber(core.settings:get("llm_agent_max_iterations")) or 8)
+    local max_repair = tostring(tonumber(core.settings:get("llm_agent_max_repair_retries")) or 1)
     table.insert(fs, string.format(
         "field[%.2f,%.2f;%.2f,%.2f;agent_max_iter;;%s]",
         PAD, y, HALF_W, FIELD_H, max_iter))
     table.insert(fs, "style[agent_max_iter;bgcolor=#1e1e1e]")
     add_tooltip(fs, "agent_max_iter", "The agent stops after this many LLM calls even if done=false. Safety cap.")
+    table.insert(fs, string.format(
+        "field[%.2f,%.2f;%.2f,%.2f;agent_max_repair_retries;;%s]",
+        W/2 + PAD, y, HALF_W, FIELD_H, max_repair))
+    table.insert(fs, "style[agent_max_repair_retries;bgcolor=#1e1e1e]")
+    add_tooltip(fs, "agent_max_repair_retries", "How many failed lua_action repair iterations are allowed. 0 disables repair retries.")
     y = y + FIELD_H + PAD
 
     y = sep(fs, y, "Live trace")
@@ -558,6 +583,7 @@ function M.handle_fields(name, formname, fields)
 
     local api = get_api()
     local tab     = active_tab[name] or "api"
+    local button_action = has_button_action(fields)
 
     -- ── Tab switches ─────────────────────────────────────────
     if fields.tab_api then
@@ -567,7 +593,7 @@ function M.handle_fields(name, formname, fields)
     end
 
     -- ── Agent toggle (instant — no Save needed) ───────────────
-    if fields.agent_enabled ~= nil then
+    if not button_action and fields.agent_enabled ~= nil then
         local val = fields.agent_enabled == "true"
         core.settings:set_bool("llm_agent_enabled", val)
         core.log("action", string.format(
@@ -577,9 +603,8 @@ function M.handle_fields(name, formname, fields)
     end
 
     -- ── Agent-tab skill target / attachment controls ──────────
-    if tab == "agent" and fields.agent_skill_target then
-        local raw_idx = tostring(fields.agent_skill_target or "")
-        local idx = tonumber(raw_idx:match("(%d+)$"))
+    if not button_action and tab == "agent" and fields.agent_skill_target then
+        local idx = dropdown_change_index(fields.agent_skill_target)
         local targets = list_skill_targets(name)
         if idx and targets[idx] then
             selected_skill_target[name] = targets[idx]
@@ -676,13 +701,20 @@ function M.handle_fields(name, formname, fields)
         elseif tab == "agent" then
             -- Validate Agent tab fields
             local max_iter = tonumber(fields.agent_max_iter)
+            local max_repair = tonumber(fields.agent_max_repair_retries)
             if not max_iter or max_iter < 1 or max_iter > 32 then
                 core.chat_send_player(name, "[LLM] Error: max iterations must be 1–32")
+                return true
+            end
+            if not max_repair or max_repair < 0 or max_repair > 10 then
+                core.chat_send_player(name, "[LLM] Error: repair retries must be 0–10")
                 return true
             end
 
             core.settings:set("llm_agent_max_iterations",
                 tostring(math.floor(max_iter)))
+            core.settings:set("llm_agent_max_repair_retries",
+                tostring(math.floor(max_repair)))
             if fields.root_agent_unrestricted ~= nil then
                 core.settings:set_bool("llm_root_agent_unrestricted", fields.root_agent_unrestricted == "true")
             end

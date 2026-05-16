@@ -16,6 +16,7 @@ local M = {}
 M.version = "0.2.0-dev"
 M.sections = M.sections or {}
 M.aliases = M.aliases or {}
+M.recent_context_by_player = M.recent_context_by_player or {}
 
 local function trim(s)
     s = tostring(s or "")
@@ -100,6 +101,23 @@ local function section_summary(section)
     }
 end
 
+local function remember_recent_context(player_name, res)
+    if type(player_name) ~= "string" or player_name == "" or type(res) ~= "table" then return res end
+    local has_content = type(res.content) == "string" and res.content ~= ""
+    local has_hits = type(res.sections) == "table" and #res.sections > 0
+    if res.ok ~= false and (has_content or has_hits) then
+        M.recent_context_by_player[player_name] = res
+    end
+    return res
+end
+
+function M.consume_recent_context(player_name)
+    if type(player_name) ~= "string" or player_name == "" then return nil end
+    local res = M.recent_context_by_player[player_name]
+    M.recent_context_by_player[player_name] = nil
+    return res
+end
+
 function M.register_section(def)
     if type(def) ~= "table" then return false, "section definition must be a table" end
     local id, err = normalize_id(def.id or def.name)
@@ -158,12 +176,12 @@ end
 function M.has(player_name, key)
     local id = M.resolve_id(key)
     local section = id and M.sections[id] or nil
-    return {
+    return remember_recent_context(player_name, {
         ok = section ~= nil and section_allowed(section, player_name),
         key = tostring(key or ""),
         id = id,
         message = section and ("Context key exists: " .. tostring(id)) or ("Context key missing: " .. tostring(key or "")),
-    }
+    })
 end
 
 function M.keys(player_name, opts)
@@ -177,13 +195,13 @@ function M.keys(player_name, opts)
         end
     end
     table.sort(aliases, function(a, b) return a.alias < b.alias end)
-    return {
+    return remember_recent_context(player_name, {
         ok = true,
         count = #sections,
         sections = sections,
         aliases = aliases,
         message = "Context keys available: " .. tostring(#sections) .. " sections, " .. tostring(#aliases) .. " aliases",
-    }
+    })
 end
 
 function M.lookup(player_name, key, args)
@@ -232,12 +250,12 @@ function M.list_sections(player_name, opts)
     end
 
     table.sort(out, function(a, b) return tostring(a.id) < tostring(b.id) end)
-    return {
+    return remember_recent_context(player_name, {
         ok = true,
         count = #out,
         sections = out,
         message = (#out == 0) and "No context sections matched" or ("Available context sections: " .. tostring(#out)),
-    }
+    })
 end
 
 function M.get_section(player_name, id, args)
@@ -261,14 +279,14 @@ function M.get_section(player_name, id, args)
         content = tostring(section.content or "")
     end
 
-    return {
+    return remember_recent_context(player_name, {
         ok = true,
         id = id,
         title = section.title or id,
         summary = section.summary or "",
         content = content,
         message = "Context section loaded: " .. id,
-    }
+    })
 end
 
 local function score_text(hay, terms)
@@ -309,13 +327,13 @@ function M.search(player_name, query, opts)
     local limit = tonumber(opts.limit or 12) or 12
     while #hits > limit do table.remove(hits) end
 
-    return {
+    return remember_recent_context(player_name, {
         ok = true,
         query = query,
         count = #hits,
         sections = hits,
         message = (#hits == 0) and "No context sections matched" or ("Context search hits: " .. tostring(#hits)),
-    }
+    })
 end
 
 function M.make_sandbox_proxy(player_name)
@@ -390,6 +408,8 @@ local function register_builtin_sections()
             "  local doc = llm_connect.context.load('skills.worldedit_agent') -- exact section id",
             "  local keys = llm_connect.context.keys() -- sections plus glossary aliases",
             "  local hits = llm_connect.context.search('worldedit cube node') -- fallback only; returns {ok,count,sections={...}}",
+            "load()/lookup()/get_section() return {ok,id,title,summary,content,message}. Read docs from doc.content.",
+            "Do not test doc.commands or doc.api after context.load(); those fields are not part of the context result.",
             "Prefer load()/lookup() with exact ids or glossary aliases. Use search() only if no alias/id is known.",
             "Return the loaded context table directly, or return {done=false, continue=true, message='Loaded context: ...'} before acting.",
             "Do not guess complex APIs, server state, node names, or skill arguments when a context section can be requested first.",
@@ -437,6 +457,7 @@ local function register_builtin_sections()
             "Common writes: core.set_node, swap_node, remove_node, add_node.",
             "Players/objects: core.get_player_by_name, get_connected_players, get_objects_inside_radius.",
             "Helpers: core.pos_to_string, string_to_pos, serialize, deserialize, after, sound_play, show_formspec.",
+            "Time changes are not exposed as core.set_time in the safe runtime. If command_agent is active, use llm_connect.skills.command_agent.set_time({time=18000}, player_name).",
             "Runtime registrations are blocked: register_node/tool/craftitem/entity/craft.",
             "Host access is blocked: io, require, dofile, loadfile, load, loadstring, debug, package.",
         }, "\n"),

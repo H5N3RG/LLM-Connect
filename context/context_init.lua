@@ -73,6 +73,13 @@ M.sections = load_optional("sections", "context_sections.lua")
 M.discovery = load_optional("discovery", "context_discovery.lua")
 M.registry = load_required("registry", "context_registry.lua")
 
+local function effective_player_name(player_name)
+    if type(player_name) == "string" and player_name ~= "" then return player_name end
+    local current = rawget(_G, "player_name")
+    if type(current) == "string" and current ~= "" then return current end
+    return player_name
+end
+
 -- Compatibility note:
 --   Runtime/GUI code may call:       context.search(player_name, query, opts)
 --   Agent-facing prompt examples use: context.search(query, opts)
@@ -104,42 +111,50 @@ end
 
 function M.list_sections(player_name, opts)
     player_name, opts = normalize_context_args(player_name, opts)
+    player_name = effective_player_name(player_name)
     return registry_call("list_sections", player_name, opts) or {}
 end
 
 function M.search(player_name, query, opts)
     player_name, query, opts = normalize_query_args(player_name, query, opts)
+    player_name = effective_player_name(player_name)
     return registry_call("search", player_name, query, opts) or {}
 end
 
 function M.get_section(player_name, id, args)
     player_name, id, args = normalize_section_args(player_name, id, args)
+    player_name = effective_player_name(player_name)
     return registry_call("get_section", player_name, id, args)
 end
 
 
 function M.keys(player_name, opts)
     player_name, opts = normalize_context_args(player_name, opts)
+    player_name = effective_player_name(player_name)
     return registry_call("keys", player_name, opts) or {}
 end
 
 function M.has(player_name, key)
     player_name, key = normalize_section_args(player_name, key, nil)
+    player_name = effective_player_name(player_name)
     return registry_call("has", player_name, key) or {}
 end
 
 function M.lookup(player_name, key, args)
     player_name, key, args = normalize_section_args(player_name, key, args)
+    player_name = effective_player_name(player_name)
     return registry_call("lookup", player_name, key, args) or {}
 end
 
 function M.load(player_name, key, args)
     player_name, key, args = normalize_section_args(player_name, key, args)
+    player_name = effective_player_name(player_name)
     return registry_call("load", player_name, key, args) or {}
 end
 
 function M.search_first(player_name, query, opts)
     player_name, query, opts = normalize_query_args(player_name, query, opts)
+    player_name = effective_player_name(player_name)
     return registry_call("search_first", player_name, query, opts) or {}
 end
 

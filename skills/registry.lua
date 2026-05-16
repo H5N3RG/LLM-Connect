@@ -185,7 +185,8 @@ function M.describe_for_agent(player_name, filter)
     if #skills == 0 then return "" end
     local lines = {
         "Active Lua-first skills are available through llm_connect.skills.<skill_id>.",
-        "Detailed manuals are intentionally not injected. Use llm_connect.context.search(...) or get_section(...) before complex skill calls.",
+        "Detailed manuals are intentionally not injected. Use llm_connect.context.load(context_section) before complex skill calls.",
+        "Context loads return documentation in the content field, not parsed API tables.",
     }
     for _, skill in ipairs(skills) do
         lines[#lines + 1] = string.format("- %s v%s: %s", tostring(skill.id), tostring(skill.version or "?"), tostring(skill.description or ""))
