@@ -207,13 +207,13 @@ Related subsystem/files:
 - `skills/registry.lua`
 - `runtime/core_executor.lua`
 
-## 7. WorldEdit Context Lookup Before Build
+## 7. Node Printer Context Lookup Before Build
 
 Required config/settings:
 
 - Player has `llm`, `llm_agent`.
 - `worldedit_agent` attached to the player.
-- WorldEdit installed and available.
+- WorldEdit is optional for native `print_plan` and high-level builders.
 - LLM provider configured.
 - Optional for evidence: `llm_live_trace_chat = true`.
 
@@ -229,6 +229,8 @@ Expected trace/log evidence:
   `llm_connect.context.load('worldedit')` or
   `llm_connect.context.load('skills.worldedit_agent')`.
 - Build action should call:
+  `llm_connect.skills.worldedit_agent.run('print_plan', ..., player_name)` for
+  custom multi-part generated structures, or:
   `llm_connect.skills.worldedit_agent.run('build_hut', ..., player_name)` or
   `run('build_house', ..., player_name)`.
 - It must not call `worldedit_agent.set_nodes`.
@@ -414,7 +416,7 @@ Related subsystem/files:
 - `runtime/core_executor.lua`
 - `runtime/execution_policy.lua`
 
-## 13. Command Agent Time Change
+## 13. Runtime Agent Time Change
 
 Required config/settings:
 
@@ -435,13 +437,13 @@ Expected trace/log evidence:
   `llm_connect.skills.command_agent.set_time({ time = 18000 }, player_name)` or
   `llm_connect.skills.command_agent.run('set_time', { time = 18000 }, player_name)`.
 - Fallback `run_chatcommand({ command = '/time 18000' }, player_name)` is
-  acceptable.
+  acceptable only if native `core.set_timeofday` is unavailable.
 - It must not call `core.set_time(18000)`.
 - Result table should contain `ok=true` and `success=true`.
 
 What failure means:
 
-- Command-agent context is stale, prompt text still suggests safe-core time
+- Runtime-agent context is stale, prompt text still suggests safe-core time
   mutation, or the command facade is not exposed in the sandbox.
 
 Related subsystem/files:

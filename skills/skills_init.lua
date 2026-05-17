@@ -79,6 +79,7 @@ function M.health()
     return {
         ok = (info.failed or 0) == 0,
         loaded = info.loaded or 0,
+        refreshed = info.refreshed or 0,
         failed = info.failed or 0,
         results = info.results or {},
     }
@@ -161,10 +162,34 @@ function M.get_contexts(player_name, filter)
     return registry_call("get_contexts", {}, player_name, filter)
 end
 
+local function copy_skill_api(api)
+    local out = {}
+    for k, v in pairs(api or {}) do
+        -- Only expose callable per-skill runtime functions. The registry/admin
+        -- facade remains outside sandboxed agent code.
+        if type(v) == "function" then out[k] = v end
+    end
+    return out
+end
+
+function M.make_sandbox_proxy(player_name, filter)
+    local proxy = {}
+    local active = M.get_active(player_name, filter) or {}
+    for _, skill in ipairs(active) do
+        local id = skill and skill.id
+        local api = id and M[id] or nil
+        if type(id) == "string" and type(api) == "table" then
+            proxy[id] = copy_skill_api(api)
+        end
+    end
+    return proxy
+end
+
 _G.llm_connect = rawget(_G, "llm_connect") or {}
 _G.llm_connect.skills = M
 _G.llm_connect.skills_subsystem = M
 _G.llm_connect.registry = M.registry
+_G.llm_connect.skill_registry = M.registry -- preferred admin/registry facade; keep llm_connect.skills runtime-facing over time.
 _G.llm_connect.addons = M -- deprecated alias: addons == skills facade
 
 _G.registry = M.registry

@@ -79,7 +79,7 @@ function M.build_system_prompt(player_name, options, state, deps)
         "- If no action is needed, do not emit any lua_action block.",
         "- For multi-step work, including context lookup before acting, return {done=false, continue=true, message=\"...\"}; otherwise stop.",
         "- Self-context API: load(key), lookup(key), keys(), has(key), list_sections(), get_section(id).",
-        "- Glossary aliases: worldedit, commands, nodes, server, api. Example: local doc = llm_connect.context.load('worldedit')",
+        "- Discover context ids and aliases with llm_connect.context.keys() or list_sections() before loading optional details.",
         "- load()/lookup()/get_section() return {ok,id,title,summary,content,message}; read documentation from doc.content.",
         "- Do not expect doc.commands or doc.api fields from context.load(); use doc.content, then continue and call the documented skill API.",
         "- If using search(query), remember it returns an object: {ok=true,count=n,sections={...}}, not an array or string.",

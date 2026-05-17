@@ -65,10 +65,10 @@ Must have:
 
 - Each skill has a subsystem-style contract: public functions, argument schema,
   return schema, examples, known model mistakes, and repair guidance.
-- `command_agent` becomes a small command facade with direct helpers for common
-  server operations and a fallback chatcommand bridge.
-- `worldedit_agent` groups high-level builders separately from low-level
-  primitives and optional WorldEditAdditions tools.
+- `command_agent` is the Runtime Agent: controlled runtime-safe Lua execution,
+  direct helpers for common server operations, and a fallback chatcommand bridge.
+- `worldedit_agent` is the Node Printer: native `print_plan` batch placement,
+  high-level builders, and optional WorldEdit/WorldEditAdditions bridge tools.
 - Agent prompt builder renders skill capabilities from these contracts without
   inventing APIs.
 

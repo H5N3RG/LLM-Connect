@@ -20,6 +20,7 @@ M.version = "1.2.0-dev"
 M.protocol = "lua-first"
 M.skills = M.skills or {}
 M.context_providers = M.context_providers or {}
+M.loaded_skill_gateways = M.loaded_skill_gateways or {}
 
 local function trim(s)
     s = tostring(s or "")
@@ -71,6 +72,7 @@ function M.register_skill(def)
     if type(def) ~= "table" then return false, "skill definition must be a table" end
     local id, err = normalize_id(def.id or def.name)
     if not id then return false, err end
+    local existed = M.skills[id] ~= nil
 
     local skill = shallow_copy(def)
     skill.id = id
@@ -89,6 +91,18 @@ function M.register_skill(def)
     skill.category = skill.category or "skill"
 
     M.skills[id] = skill
+    if type(M.current_skill_load) == "table" then
+        local load = M.current_skill_load
+        load.registered_ids = load.registered_ids or {}
+        load.registered_ids[#load.registered_ids + 1] = id
+        if existed then
+            load.refreshed_ids = load.refreshed_ids or {}
+            load.refreshed_ids[#load.refreshed_ids + 1] = id
+        else
+            load.new_ids = load.new_ids or {}
+            load.new_ids[#load.new_ids + 1] = id
+        end
+    end
     core.log("action", "[registry] Lua-first skill registered: " .. id)
     return true, skill
 end
@@ -117,11 +131,7 @@ function M.list_skills(player_name, filter)
         if is_skill_available(skill) and (not filter or allowed[id]) then
             local required = skill.required_priv or skill.priv or "llm_agent"
             local attached = M.is_skill_attached(player_name, id)
-            local manual = M.has_player_override(player_name, id) and attached
-            -- Manual root attachment is authoritative for the target session.
-            -- Skill required_priv remains visible in status, but it does not block
-            -- a skill that llm_root explicitly attached to this player.
-            if attached and (manual or has_priv(player_name, required)) then out[#out + 1] = skill end
+            if attached and has_priv(player_name, required) then out[#out + 1] = skill end
         end
     end
     table.sort(out, function(a, b) return tostring(a.id) < tostring(b.id) end)
@@ -185,13 +195,19 @@ function M.describe_for_agent(player_name, filter)
     if #skills == 0 then return "" end
     local lines = {
         "Active Lua-first skills are available through llm_connect.skills.<skill_id>.",
+        "In visible chat, use each skill's display name. Treat skill_id values as code namespaces only.",
         "Detailed manuals are intentionally not injected. Use llm_connect.context.load(context_section) before complex skill calls.",
         "Context loads return documentation in the content field, not parsed API tables.",
     }
     for _, skill in ipairs(skills) do
-        lines[#lines + 1] = string.format("- %s v%s: %s", tostring(skill.id), tostring(skill.version or "?"), tostring(skill.description or ""))
+        local display = skill.label or skill.display_name or skill.name or skill.id
+        lines[#lines + 1] = string.format("- %s v%s: %s", tostring(display), tostring(skill.version or "?"), tostring(skill.description or ""))
+        lines[#lines + 1] = "  Code namespace: llm_connect.skills." .. tostring(skill.id)
         local ctx_id = skill.context_section or ("skills." .. tostring(skill.id))
         lines[#lines + 1] = "  Context section: " .. ctx_id
+        if type(skill.context_aliases) == "table" and #skill.context_aliases > 0 then
+            lines[#lines + 1] = "  Context aliases: " .. table.concat(skill.context_aliases, ", ")
+        end
     end
     return table.concat(lines, "\n")
 end
@@ -275,7 +291,7 @@ function M.get_status(player_name)
             manual = manual,
             manual_attached = manually_attached,
             default_enabled = skill.default_enabled == true,
-            effective = available and enabled and (has or manually_attached),
+            effective = available and enabled and has,
             tool_count = skill.tool_count or (type(skill.api) == "table" and #skill.api or 0),
             required_priv = required,
             version = skill.version or "0.1.0",
@@ -316,47 +332,120 @@ local function file_exists(path)
     return false
 end
 
-function M.load_internal()
-    local modpath = core.get_modpath(core.get_current_modname())
-    local files = {
-        { id = "command_agent", rel = "skills/command_agent/command_agent.lua" },
-        { id = "worldedit_agent", rel = "skills/worldedit_agent/worldedit_agent.lua" },
-    }
-    local loaded = 0
-    local failed = 0
-    local results = {}
-
-    for _, spec in ipairs(files) do
-        local path = modpath .. "/" .. spec.rel
-        if not file_exists(path) then
-            local msg = "internal skill file missing: " .. spec.rel
-            failed = failed + 1
-            results[spec.id] = { ok = false, error = msg, path = path }
-            health_mark("degraded", spec.id, msg)
-            core.log("warning", "[registry] " .. msg)
-        else
-            local ok, err = pcall(dofile, path)
-            if ok then
-                loaded = loaded + 1
-                results[spec.id] = { ok = true, path = path }
-                health_mark("ok", spec.id, "loaded")
-                core.log("action", "[registry] loaded Lua-first internal skill file: " .. spec.rel)
-            else
-                local msg = "failed to load Lua-first internal skill file " .. spec.rel .. ": " .. tostring(err)
-                failed = failed + 1
-                results[spec.id] = { ok = false, error = msg, path = path }
-                health_mark("degraded", spec.id, msg)
-                core.log("warning", "[registry] " .. msg)
+local function list_skill_dirs(base)
+    local dirs = {}
+    if core.get_dir_list then
+        local ok, found = pcall(core.get_dir_list, base, true)
+        if ok and type(found) == "table" then
+            for _, name in ipairs(found) do
+                if type(name) == "string" and name ~= "" and name:sub(1, 1) ~= "." then
+                    dirs[#dirs + 1] = name
+                end
             end
         end
     end
+    table.sort(dirs)
+    return dirs
+end
 
-    M.internal_skill_load = { loaded = loaded, failed = failed, results = results }
+local function load_skill_gateway(spec, results)
+    local path = spec.path
+    if not file_exists(path) then
+        local msg = "skill gateway missing: " .. spec.rel
+        results[spec.name] = { ok = false, error = msg, path = path }
+        core.log("warning", "[registry] " .. msg)
+        return false
+    end
+
+    local old_loading = M.current_skill_load
+    M.current_skill_load = {
+        name = spec.name,
+        dir = spec.dir,
+        path = path,
+        rel = spec.rel,
+        registered_ids = {},
+        new_ids = {},
+        refreshed_ids = {},
+    }
+    local ok, err = pcall(dofile, path)
+    local load = M.current_skill_load
+    M.current_skill_load = old_loading
+
+    if not ok then
+        local msg = "failed to load skill gateway " .. spec.rel .. ": " .. tostring(err)
+        results[spec.name] = { ok = false, error = msg, path = path }
+        health_mark("degraded", spec.name, msg)
+        core.log("warning", "[registry] " .. msg)
+        return false
+    end
+
+    local registered = load and load.registered_ids or {}
+    local new_ids = load and load.new_ids or {}
+    local refreshed = load and load.refreshed_ids or {}
+    table.sort(registered)
+    table.sort(new_ids)
+    table.sort(refreshed)
+
+    if #registered == 0 then
+        local msg = "skill gateway loaded but registered no skill: " .. spec.rel
+        results[spec.name] = { ok = false, error = msg, path = path }
+        health_mark("degraded", spec.name, msg)
+        core.log("warning", "[registry] " .. msg)
+        return false
+    end
+
+    for _, id in ipairs(registered) do
+        health_mark("ok", id, "loaded")
+    end
+    M.loaded_skill_gateways[spec.name] = spec
+    local state = (#new_ids > 0) and "loaded" or "refreshed"
+    results[spec.name] = {
+        ok = true,
+        state = state,
+        path = path,
+        registered = registered,
+        new = new_ids,
+        refreshed = refreshed,
+    }
+    core.log("action", "[registry] " .. state .. " Lua-first skill gateway: " .. spec.rel .. " -> " .. table.concat(registered, ", "))
+    return true, state
+end
+
+function M.load_internal()
+    local modpath = core.get_modpath(core.get_current_modname())
+    local base = modpath .. "/skills"
+    local loaded = 0
+    local refreshed = 0
+    local failed = 0
+    local results = {}
+
+    local skill_dirs = list_skill_dirs(base)
+    if #skill_dirs == 0 then
+        core.log("warning", "[registry] no skill gateways discovered under skills/*/init.lua")
+    end
+
+    for _, name in ipairs(skill_dirs) do
+        local spec = {
+            name = name,
+            dir = base .. "/" .. name,
+            rel = "skills/" .. name .. "/init.lua",
+            path = base .. "/" .. name .. "/init.lua",
+        }
+        local ok, state = load_skill_gateway(spec, results)
+        if ok then
+            if state == "refreshed" then refreshed = refreshed + 1
+            else loaded = loaded + 1 end
+        else
+            failed = failed + 1
+        end
+    end
+
+    M.internal_skill_load = { loaded = loaded, refreshed = refreshed, failed = failed, results = results }
     return loaded, M.internal_skill_load
 end
 
 function M.discover_external()
-    core.log("action", "[registry] external skill discovery skipped — Lua-first skills must register explicitly")
+    core.log("action", "[registry] external skill discovery skipped — structured skill gateways are loaded from skills/*/init.lua")
     return 0
 end
 

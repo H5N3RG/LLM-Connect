@@ -42,10 +42,11 @@ Important current contracts:
 - `player_name` must be available in sandboxed and root-unrestricted agent
   actions.
 - Context docs are read from `doc.content`.
-- `command_agent.set_time({time=18000}, player_name)` is the preferred time
-  path; `core.set_time` is not available in safe runtime.
-- `worldedit_agent.run(tool, args, player_name)` is the preferred WorldEdit
-  path.
+- `command_agent` is labeled Runtime Agent; use
+  `execute_lua(...)` for controlled runtime-safe Lua and `set_time(...)` for
+  time changes. `core.set_time` is not available in safe runtime.
+- `worldedit_agent` is labeled Node Printer; use `print_plan` for generated
+  structures and high-level builders for simple natural-language builds.
 
 ---
 
@@ -207,11 +208,20 @@ The skill registry code exposes `attach_skill_to_player()` and
 `attach_to_player()` and `detach_from_player()`. A future implementation session
 must verify this mismatch before assuming `/llm_skill_attach` works.
 
-### WorldEdit Agent Contract
+### Node Printer Contract
 
 The supported public call form is:
 
 ```lua
+llm_connect.skills.worldedit_agent.run("print_plan", {
+  boxes = {
+    { x = -3, y = 0, z = -3, width = 7, height = 1, length = 7, node = "default:stone" },
+  },
+  rows = {
+    { x = -2, y = 1, z = -3, axis = "x", length = 5, node = "default:wood" },
+  },
+}, player_name)
+
 llm_connect.skills.worldedit_agent.run("build_hut", {}, player_name)
 llm_connect.skills.worldedit_agent.run("build_house", {
   width = 7,
@@ -230,8 +240,9 @@ llm_connect.skills.worldedit_agent.set_nodes(...)
 ```
 
 Supported tools are listed in `skills/worldedit_agent/worldedit_agent.lua` under
-`TOOLS`. High-level builders should be preferred for natural-language building
-tasks: `build_hut`, `build_house`, `build_tower`, and `build_platform`.
+`TOOLS`. `print_plan` is preferred for custom generated structures. High-level
+builders should be preferred for simple natural-language building tasks:
+`build_hut`, `build_house`, `build_tower`, and `build_platform`.
 
 ## Implementation Priorities
 

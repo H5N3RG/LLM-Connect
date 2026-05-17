@@ -1,109 +1,116 @@
-## !! This README.md is deprecated and only in use as placeholder, waiting for update.
-
 # LLM-Connect
 
-LLM-Connect is a Lua-first AI agent framework for Luanti (formerly Minetest).
+LLM-Connect is a Lua-first AI agent framework for Luanti (formerly Minetest) that enables natural language interaction with the game world through a dual-channel architecture.
 
-## Current Architecture Direction (1.1.0-dev)
+## 🔧 Current Version: 1.2.0-dev
 
-The project has transitioned away from the previous JSON-centric command architecture and now follows a Lua-first dual-channel agent model.
+## 🏗️ Architecture
+
+LLM-Connect follows a **Lua-first dual-channel agent model**:
+
+1. **Visible Channel**: Normal chat responses shown to players
+2. **Hidden Channel**: Lua action execution through marked `lua_action` blocks
 
 ### Core Principles
 
-- Normal chat responses remain visible plain text.
-- Tool / action execution happens through hidden `lua_action` blocks.
-- All runtime execution flows through `core_executor.lua`.
-- Skills are loaded through `registry.lua`.
-- `agent.lua` acts as an orchestrator instead of a direct command executor.
-- `basic_context.lua` now focuses on lightweight runtime context instead of massive command dumps.
+- Normal chat remains visible plain text
+- Tool/action execution happens through hidden `lua_action` blocks
+- All runtime execution flows through `core_executor.lua`
+- Skills are loaded through `registry.lua`
+- `agent.lua` acts as an orchestrator instead of direct command executor
+- `basic_context.lua` provides lightweight runtime context
 
-## Core Runtime Pipeline
+### Runtime Pipeline
 
 ```text
 main_gui.lua
     ↓
-agent.lua
+agent.lua (orchestrator)
     ↓
-parser_utils.lua
+parser_utils.lua (extracts lua_action blocks)
     ↓
-core_executor.lua
+core_executor.lua (secure Lua execution)
     ↓
 Luanti Engine
 ```
 
-## Major Components
+## 📦 Major Components
 
 ### agent.lua
-
-Dual-channel orchestrator:
-
-- visible assistant chat
-- hidden Lua action execution
-- optional iterative task execution
+Dual-channel orchestrator managing:
+- Visible assistant chat
+- Hidden Lua action execution
+- Optional iterative task execution
 
 ### parser_utils.lua
-
-Responsible for:
-
-- extracting `lua_action` blocks
-- stripping hidden actions from visible output
-- preparing execution-safe Lua payloads
+Handles:
+- Extracting `lua_action` blocks from LLM responses
+- Stripping hidden actions from visible output
+- Preparing execution-safe Lua payloads
 
 ### core_executor.lua
-
-Central runtime execution layer:
-
-- sandbox execution
-- runtime pre-checks
-- protected execution
-- shared execution backend for agent + IDE
+Central runtime execution layer providing:
+- Sandbox execution
+- Runtime pre-checks
+- Protected execution
+- Shared backend for agent + IDE
 
 ### registry.lua
-
-Lua-first skill registry:
-
-- registers active skills
-- injects skill schemas/context
-- manages internal Lua-first skills
+Lua-first skill registry that:
+- Registers active skills
+- Injects skill schemas/context
+- Manages internal Lua-first skills
 
 ### basic_context.lua
-
 Provides:
+- Lightweight player/server state
+- Runtime-safe Lua guidance
+- Optional advanced registry information
 
-- lightweight player/server state
-- runtime-safe Lua guidance
-- optional advanced registry information
+## 🛠️ Current Internal Skills
 
-## Current Internal Skills
+- `command_agent` - Executes chat commands
+- `worldedit_agent` - WorldEdit building operations with high-level primitives
 
-- `command_agent`
-- `worldedit_agent`
+## 🔄 IDE Persistence / Hot-Reload
 
-## Status
+The Smart Lua IDE uses a storage bridge:
+- Default backend: `world/llm_scripts/<player>/` via `runtime_scripts.lua`
+- Root-only backend: trusted worldmods via `trusted_mods.lua`
+- `Run`: Transient execution
+- `Save`: Manual persistence through active backend
+- `Hot Reload`: Saves and executes runtime-safe scripts
 
-The framework is currently in an active architectural transition toward:
+## 📚 Documentation
 
-- Lua-native agent execution
-- deterministic runtime orchestration
-- future hot-reload support
-- persistent runtime skills
-- reduced prompt/context bloat
+Detailed developer documentation is available in the [`docs/dev/`](docs/dev/) directory:
+- [PATCH_AGENDA_CONTEXT_ORCHESTRATION.md](docs/dev/PATCH_AGENDA_CONTEXT_ORCHESTRATION.md) - Context/WorldEdit orchestration stabilization
+- [PLAN_OPTIONS.md](docs/dev/PLAN_OPTIONS.md) - Architectural decisions needing user approval
+- [TESTS.md](docs/dev/TESTS.md) - Testing guidelines
+- [CODEX.md](docs/dev/CODEX.md) - Reference documentation
 
-Version:
+## ⚙️ Chat Commands
 
-`1.1.0-dev`
+- `/llm` - Open LLM Connect chat interface
+- `/llm_config` - Open configuration GUI
+- `/llm_health` - Show subsystem health status
+- `/llm_skill_list` - List skills for a player (root)
+- `/llm_skill_attach` - Attach/detach skills for a player (root)
+- `/llm_trace` - Open live trace panel (root)
+- `/llm_config_reload` - Reload configuration without restart
+- `/llm_startup_reload` - Re-execute llm_startup.lua at runtime
 
+## 🔐 Privileges
 
-### IDE persistence / hot-reload
+- `llm` - Access to LLM Connect AI chat
+- `llm_dev` - Access to Smart Lua IDE and sandboxed code execution
+- `llm_agent` - Access to LLM Connect agent mode and skill tools
+- `llm_root` - Full LLM Connect access (implies llm, llm_dev, llm_agent)
 
-The Smart Lua IDE now uses a storage bridge instead of writing directly to legacy snippets/startup files:
+## 📝 License
 
-- default backend: `world/llm_scripts/<player>/` via `runtime_scripts.lua`;
-- root-only optional backend slot: trusted standalone worldmods via `trusted_mods.lua`;
-- `Run` is transient execution;
-- `Save` is manual persistence through the active backend;
-- `Hot Reload` saves and executes only runtime-safe scripts;
-- startup-preferred registrations are saved, but require/recommend restart.
+LGPL-3.0-or-later
 
-The agent path does not persist code.
+## 👨‍💻 Author
 
+H5N3RG

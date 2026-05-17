@@ -1,18 +1,19 @@
 -- ===========================================================================
---  skills/worldedit_agent/worldedit_agent.lua — LLM Connect 1.0
+--  skills/worldedit_agent/worldedit_agent.lua — LLM Connect Node Printer
 --  author: H5N3RG
 --  license: LGPL-3.0-or-later
 --
---  WorldEdit addon for the LLM Connect agent system.
---  Ported from llm_worldedit.lua (0.9.0) to the 1.0 addon interface.
+--  Agent-facing node printer for LLM Connect.
+--  The skill id remains worldedit_agent for compatibility, but the preferred
+--  path is native batch node placement. WorldEdit remains a bridge backend for
+--  selections and legacy operations.
 --
---  Changes vs 0.9.0:
---    - Agent loop logic removed (now in agent.lua)
---    - Snapshot/undo delegated to agent.lua via snapshot_hook/restore_hook
---    - Registered via llm_connect.registry.register() instead of globals
---    - get_context() provides pos1/pos2 + environment scan per iteration
---    - Tool names prefixed by registry: "worldedit_agent.set_region" etc.
---    - WEA tools included as optional tool group when worldeditadditions present
+--  Gateway contract:
+--    - skills/worldedit_agent/init.lua is discovered generically.
+--    - This file registers its own API through registry.register_skill().
+--    - Context aliases and manuals are owned by this skill, not the engine.
+--    - WorldEdit bridge tools are compatibility/extension paths; native
+--      print_plan is the preferred generated-structure primitive.
 --
 --  Privilege required: llm_agent (checked by registry)
 --
@@ -124,8 +125,8 @@ local function make_pos(args, player_name)
         return { x=tonumber(args.pos.x) or 0, y=tonumber(args.pos.y) or 0, z=tonumber(args.pos.z) or 0 }
     end
     if type(args.pos) == "string" and player_name then
-        if args.pos == "pos1" and worldedit.pos1[player_name] then return worldedit.pos1[player_name] end
-        if args.pos == "pos2" and worldedit.pos2[player_name] then return worldedit.pos2[player_name] end
+        if type(worldedit) == "table" and args.pos == "pos1" and worldedit.pos1 and worldedit.pos1[player_name] then return worldedit.pos1[player_name] end
+        if type(worldedit) == "table" and args.pos == "pos2" and worldedit.pos2 and worldedit.pos2[player_name] then return worldedit.pos2[player_name] end
     end
     -- Also accept player pos as default when no explicit coords given
     if not args.x and not args.y and not args.z and player_name then
@@ -147,7 +148,8 @@ local function require_selection(name)
     return p1, p2, nil
 end
 
-local function validate_axis(axis)
+local validate_axis
+function validate_axis(axis)
     if not ({x=1,y=1,z=1})[axis] then
         return false, "axis must be x, y or z"
     end
@@ -188,25 +190,23 @@ local function sample_environment(pos, radius, step)
 end
 
 local function get_context(player_name)
-    if type(worldedit) ~= "table" then
-        local modpath = core.get_modpath and core.get_modpath("worldedit") or nil
-        if modpath then
-            return "WorldEdit: installed at " .. tostring(modpath) .. ", but the global Lua API table is not available yet. The worldedit_agent skill cannot run until the API table exists."
-        end
-        return "WorldEdit: not installed or not loaded (core.get_modpath('worldedit') returned nil)"
-    end
-
     local player = core.get_player_by_name(player_name)
-    if not player then return "WorldEdit context: player not found" end
+    if not player then return "Node Printer context: player not found" end
 
     local pos = player:get_pos()
     local px, py, pz = math.floor(pos.x), math.floor(pos.y), math.floor(pos.z)
 
-    local p1 = worldedit.pos1 and worldedit.pos1[player_name]
-    local p2 = worldedit.pos2 and worldedit.pos2[player_name]
+    local we_available = type(worldedit) == "table"
+    local p1 = we_available and worldedit.pos1 and worldedit.pos1[player_name]
+    local p2 = we_available and worldedit.pos2 and worldedit.pos2[player_name]
 
     local sel_str
-    if p1 and p2 then
+    if not we_available then
+        local modpath = core.get_modpath and core.get_modpath("worldedit") or nil
+        sel_str = modpath
+            and "WorldEdit installed but Lua API table unavailable; native node printing still works"
+            or "WorldEdit not loaded; native node printing still works"
+    elseif p1 and p2 then
         local vol = worldedit.volume and worldedit.volume(p1, p2) or "?"
         sel_str = string.format(
             "pos1=(%d,%d,%d) pos2=(%d,%d,%d) volume=%s",
@@ -223,10 +223,11 @@ local function get_context(player_name)
     local env = sample_environment(pos)
 
     local lines = {
-        string.format("WorldEdit — player pos: (%d,%d,%d)", px, py, pz),
+        string.format("Node Printer — player pos: (%d,%d,%d)", px, py, pz),
         "Selection: " .. sel_str,
         env,
-        "Tip: set_pos1/set_pos2 take absolute coords. Primitives (sphere etc.) default to player pos if no coords given.",
+        "Preferred: print_plan with nodes/rows/boxes. Coordinates are relative to player position unless absolute=true.",
+        "WorldEdit bridge calls still exist for selections, terrain transforms, and compatibility.",
     }
 
     -- WEA availability hint
@@ -301,6 +302,160 @@ local function fill_box(p1, p2, node, hollow)
         end
     end
     return count
+end
+
+local function copy_pos(pos)
+    return {
+        x = math.floor(tonumber(pos and pos.x) or 0),
+        y = math.floor(tonumber(pos and pos.y) or 0),
+        z = math.floor(tonumber(pos and pos.z) or 0),
+    }
+end
+
+local function add_pos(a, b)
+    return {
+        x = (a and a.x or 0) + (b and b.x or 0),
+        y = (a and a.y or 0) + (b and b.y or 0),
+        z = (a and a.z or 0) + (b and b.z or 0),
+    }
+end
+
+local function table_len(t)
+    local n = 0
+    for _ in pairs(t or {}) do n = n + 1 end
+    return n
+end
+
+local function plan_int(v, default, min_v, max_v)
+    v = tonumber(v or default) or default
+    v = math.floor(v)
+    if min_v and v < min_v then v = min_v end
+    if max_v and v > max_v then v = max_v end
+    return v
+end
+
+local function resolve_plan_origin(args, player_name)
+    if type(args.origin) == "table" then return copy_pos(args.origin) end
+    if type(args.pos) == "table" and args.absolute ~= true then return make_pos(args, player_name) end
+    local player = player_name and core.get_player_by_name(player_name)
+    if player then return copy_pos(player:get_pos()) end
+    return { x = 0, y = 0, z = 0 }
+end
+
+local function plan_pos(raw, origin, absolute)
+    local pos = type(raw) == "table" and raw.pos or raw
+    local out = copy_pos(pos or raw)
+    if absolute == true then return out end
+    return add_pos(origin, out)
+end
+
+local function append_box_ops(ops, p1, p2, node, hollow, limit)
+    local minx, maxx = math.min(p1.x, p2.x), math.max(p1.x, p2.x)
+    local miny, maxy = math.min(p1.y, p2.y), math.max(p1.y, p2.y)
+    local minz, maxz = math.min(p1.z, p2.z), math.max(p1.z, p2.z)
+    for x = minx, maxx do
+        for y = miny, maxy do
+            for z = minz, maxz do
+                local boundary = x == minx or x == maxx or y == miny or y == maxy or z == minz or z == maxz
+                if not hollow or boundary then
+                    if #ops >= limit then return false, "plan exceeds max_nodes=" .. tostring(limit) end
+                    ops[#ops + 1] = { x = x, y = y, z = z, node = node }
+                end
+            end
+        end
+    end
+    return true
+end
+
+local function build_node_plan(args, player_name)
+    args = args or {}
+    local origin = resolve_plan_origin(args, player_name)
+    local absolute = args.absolute == true
+    local max_nodes = tonumber(args.max_nodes or 20000) or 20000
+    local ops = {}
+
+    for _, item in ipairs(args.nodes or {}) do
+        local node, err = resolve_node(tostring(item.node or item.name or item[4] or args.node or "air"))
+        if not node then return nil, "nodes: " .. err end
+        local raw_pos = item.pos or { x = item.x or item[1], y = item.y or item[2], z = item.z or item[3] }
+        local pos = plan_pos(raw_pos, origin, absolute)
+        if #ops >= max_nodes then return nil, "plan exceeds max_nodes=" .. tostring(max_nodes) end
+        ops[#ops + 1] = { x = pos.x, y = pos.y, z = pos.z, node = node }
+    end
+
+    for _, row in ipairs(args.rows or {}) do
+        local node, err = resolve_node(tostring(row.node or row.name or args.node or "air"))
+        if not node then return nil, "rows: " .. err end
+        local axis = tostring(row.axis or "x")
+        local ok, aerr = validate_axis(axis)
+        if not ok then return nil, "rows: " .. aerr end
+        local len = plan_int(row.length or row.count, 1, 1, max_nodes)
+        local step = tonumber(row.step or 1) or 1
+        local start = plan_pos(row.pos or { x = row.x, y = row.y, z = row.z }, origin, absolute)
+        for i = 0, len - 1 do
+            if #ops >= max_nodes then return nil, "plan exceeds max_nodes=" .. tostring(max_nodes) end
+            local pos = { x = start.x, y = start.y, z = start.z }
+            pos[axis] = pos[axis] + i * step
+            ops[#ops + 1] = { x = pos.x, y = pos.y, z = pos.z, node = node }
+        end
+    end
+
+    for _, box in ipairs(args.boxes or {}) do
+        local node, err = resolve_node(tostring(box.node or box.name or args.node or "air"))
+        if not node then return nil, "boxes: " .. err end
+        local p1 = plan_pos(box.pos1 or box.p1 or box.from or box.min or box, origin, absolute)
+        local p2
+        if box.pos2 or box.p2 or box.to or box.max then
+            p2 = plan_pos(box.pos2 or box.p2 or box.to or box.max, origin, absolute)
+        else
+            p2 = {
+                x = p1.x + plan_int(box.width or box.w, 1, 1, max_nodes) - 1,
+                y = p1.y + plan_int(box.height or box.h, 1, 1, max_nodes) - 1,
+                z = p1.z + plan_int(box.length or box.l, 1, 1, max_nodes) - 1,
+            }
+        end
+        local ok, berr = append_box_ops(ops, p1, p2, node, box.hollow == true, max_nodes)
+        if not ok then return nil, berr end
+    end
+
+    return ops, nil, origin
+end
+
+local function print_plan(args, player_name)
+    local ops, err, origin = build_node_plan(args or {}, player_name)
+    if not ops then return { ok = false, success = false, message = err } end
+    if #ops == 0 then
+        return { ok = false, success = false, message = "print_plan: no nodes, rows, or boxes supplied" }
+    end
+    if args and args.dry_run == true then
+        return {
+            ok = true,
+            success = true,
+            message = string.format("Plan validated: %d node writes", #ops),
+            data = { nodes = #ops, origin = origin },
+        }
+    end
+
+    local by_node = {}
+    local minp, maxp
+    for _, op in ipairs(ops) do
+        place_node(op.node, op.x, op.y, op.z)
+        by_node[op.node] = (by_node[op.node] or 0) + 1
+        if not minp then
+            minp = { x = op.x, y = op.y, z = op.z }
+            maxp = { x = op.x, y = op.y, z = op.z }
+        else
+            minp.x = math.min(minp.x, op.x); minp.y = math.min(minp.y, op.y); minp.z = math.min(minp.z, op.z)
+            maxp.x = math.max(maxp.x, op.x); maxp.y = math.max(maxp.y, op.y); maxp.z = math.max(maxp.z, op.z)
+        end
+    end
+
+    return {
+        ok = true,
+        success = true,
+        message = string.format("Printed %d nodes across %d material(s)", #ops, table_len(by_node)),
+        data = { nodes = #ops, materials = by_node, origin = origin, min = minp, max = maxp },
+    }
 end
 
 local function centered_origin(args, player_name, width, length)
@@ -478,11 +633,16 @@ local function run_tool(tool_name, args, player_name)
     if type(player_name) ~= "string" or player_name == "" then
         return {ok=false, message="worldedit_agent: missing player_name; call run('tool_name', {args...}, player_name)"}
     end
-    if not worldedit then
-        return {ok=false, message="worldedit_agent: WorldEdit is not loaded"}
+
+    -- Native node-printer tools. These do not require WorldEdit.
+    if tool_name == "print_plan" or tool_name == "print_nodes" then
+        return print_plan(args, player_name)
+    elseif tool_name == "preview_plan" then
+        args.dry_run = true
+        return print_plan(args, player_name)
     end
 
-    -- ── Agent-friendly high-level builders ─────────────────────────
+    -- Agent-friendly high-level builders. These use native node placement.
 
     if tool_name == "build_platform" then
         return build_platform(args, player_name)
@@ -492,6 +652,10 @@ local function run_tool(tool_name, args, player_name)
         return build_house(args, player_name)
     elseif tool_name == "build_tower" then
         return build_tower(args, player_name)
+    end
+
+    if not worldedit then
+        return {ok=false, message="worldedit_agent: WorldEdit bridge is not loaded; use print_plan/print_nodes or high-level builders"}
     end
 
     -- ── Selection ────────────────────────────────────────────
@@ -775,6 +939,11 @@ end
 -- ===========================================================================
 
 local TOOLS = {
+    -- Native node-printer tools: preferred for model-generated structures
+    { name="print_plan", description="Validate and place a batch of nodes, rows, and boxes. Coordinates are relative to player position unless absolute=true.",
+      parameters={nodes="array optional", rows="array optional", boxes="array optional", origin="pos optional", absolute="boolean optional", max_nodes="integer optional"} },
+    { name="preview_plan", description="Validate a print_plan without writing nodes.",
+      parameters={nodes="array optional", rows="array optional", boxes="array optional", origin="pos optional", absolute="boolean optional", max_nodes="integer optional"} },
     -- High-level builders: preferred for natural-language building tasks
     { name="build_hut",      description="Build a small centered hut at the player's position. Preferred for simple hut requests.",
       parameters={width="integer optional", length="integer optional", height="integer optional", wall="node optional", floor="node optional", roof="node optional"} },
@@ -886,6 +1055,14 @@ local function do_register()
             local tool_name, args, player_name = normalize_run_args(a, b, c)
             return run_tool(tool_name, args or {}, player_name)
         end,
+        print_plan = function(args, player_name)
+            return print_plan(args or {}, player_name)
+        end,
+        preview_plan = function(args, player_name)
+            args = args or {}
+            args.dry_run = true
+            return print_plan(args, player_name)
+        end,
         set_node = function(pos, node_name)
             -- Compatibility for common model mistakes. Prefer run('cube'...) or
             -- run('set_region'...) for bulk work.
@@ -905,9 +1082,9 @@ local function do_register()
     if root.context and type(root.context.register_section) == "function" then
         root.context.register_section({
             id = "skills.worldedit_agent",
-            title = "WorldEdit Agent skill manual",
-            summary = "Selections, region operations, primitives, and safe node/material usage.",
-            tags = {"skill", "worldedit", "building", "nodes", "regions"},
+            title = "Node Printer skill manual",
+            summary = "Native node batch printing plus WorldEdit bridge compatibility.",
+            tags = {"skill", "worldedit", "node_printer", "building", "nodes", "regions"},
             required_priv = "llm_agent",
             provider = function(player_name)
                 return table.concat({
@@ -917,19 +1094,29 @@ local function do_register()
                     "  llm_connect.skills.worldedit_agent.run('tool_name', {arg=value}, player_name)",
                     "Do not omit player_name. Do not pass player_name as the first argument.",
                     "",
+                    "Preferred native node-printer calls for complex generated structures:",
+                    "  llm_connect.skills.worldedit_agent.run('print_plan', {",
+                    "    nodes = {{x=0,y=1,z=0,node='default:glass'}},",
+                    "    rows = {{x=-2,y=0,z=0,axis='x',length=5,node='default:wood'}},",
+                    "    boxes = {{x=-3,y=0,z=-3,width=7,height=1,length=7,node='default:stone'}},",
+                    "  }, player_name)",
+                    "  llm_connect.skills.worldedit_agent.run('preview_plan', {boxes={{x=0,y=0,z=0,width=3,height=3,length=3,node='default:stone'}}}, player_name)",
+                    "print_plan coordinates are relative to the player's current integer position unless absolute=true or origin={x=...,y=...,z=...} is provided.",
+                    "Use max_nodes to cap write volume for large generated plans.",
+                    "",
                     "Preferred high-level calls for natural language building tasks:",
                     "  llm_connect.skills.worldedit_agent.run('build_hut', {}, player_name)",
                     "  llm_connect.skills.worldedit_agent.run('build_house', {width=7,length=7,height=4,wall='default:wood',floor='default:stone',roof='default:cobble'}, player_name)",
                     "  llm_connect.skills.worldedit_agent.run('build_tower', {radius=3,height=12,wall='default:cobble'}, player_name)",
                     "",
-                    "Lower-level calls:",
+                    "WorldEdit bridge calls, when WorldEdit is loaded:",
                     "  llm_connect.skills.worldedit_agent.run('set_pos1', {x=0,y=0,z=0}, player_name)",
                     "  llm_connect.skills.worldedit_agent.run('set_pos2', {x=10,y=10,z=10}, player_name)",
                     "  llm_connect.skills.worldedit_agent.run('set_region', {node='default:stone'}, player_name)",
                     "  llm_connect.skills.worldedit_agent.run('clear_region', {}, player_name)",
                     "  llm_connect.skills.worldedit_agent.run('cube', {width=5,height=3,length=5,node='default:stone',hollow=false}, player_name)",
                     "  llm_connect.skills.worldedit_agent.run('sphere', {radius=4,node='default:glass',hollow=true}, player_name)",
-                    "Avoid direct set_node/set_nodes helpers; they exist only as compatibility fallbacks.",
+                    "Avoid direct set_node/set_nodes helpers; use print_plan for bulk work.",
                     "",
                     "Safe common materials:",
                     "  default:stone, default:cobble, default:wood, default:tree, default:glass, default:brick, default:dirt_with_grass, air",
@@ -939,6 +1126,14 @@ local function do_register()
                 }, "\n")
             end,
         })
+        if type(root.context.register_aliases) == "function" then
+            root.context.register_aliases({
+                node_printer = "skills.worldedit_agent",
+                building = "skills.worldedit_agent",
+                worldedit = "skills.worldedit_agent",
+                worldedit_agent = "skills.worldedit_agent",
+            })
+        end
     end
 
 
@@ -949,19 +1144,16 @@ local function do_register()
 
     root.registry.register_skill({
         id          = "worldedit_agent",
-        label       = "WorldEdit Agent",
-        version     = "1.2.0-dev",
-        description = "Lua-first WorldEdit bridge: selections, region operations, primitives and optional WEA tools.",
+        label       = "Node Printer",
+        version     = "1.3.0-dev",
+        description = "Lua-first node printer for batch structures, high-level builders, and WorldEdit bridge compatibility.",
         required_priv = "llm_agent",
         default_enabled = false,
         available = function()
-            local we = rawget(_G, "worldedit")
-            return type(we) == "table"
-                and (type(we.set) == "function"
-                     or type(we.set_node) == "function"
-                     or next(we) ~= nil)
+            return type(core.set_node) == "function" and type(core.registered_nodes) == "table"
         end,
         context_section = "skills.worldedit_agent",
+        context_aliases = {"node_printer", "building", "worldedit"},
         get_context = get_context,
         snapshot_hook = snapshot_hook,
         restore_hook  = restore_hook,

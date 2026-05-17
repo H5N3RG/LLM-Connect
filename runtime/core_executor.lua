@@ -99,10 +99,12 @@ local function create_safe_llm_connect(player_name, opts)
         and can_use_agent_skills(player_name)
 
     if allow_skills then
-        -- Expose subsystem facades into sandboxed agent code, not the full
-        -- runtime root table. registry is kept as a compatibility alias.
-        proxy.skills = root.skills or root.skills_subsystem
-        proxy.registry = proxy.skills or root.registry
+        local skills = root.skills or root.skills_subsystem
+        if type(skills) == "table" and type(skills.make_sandbox_proxy) == "function" then
+            proxy.skills = skills.make_sandbox_proxy(player_name)
+        else
+            proxy.skills = {}
+        end
 
         local context_registry = root.context_registry or root.context
         if type(context_registry) == "table" then

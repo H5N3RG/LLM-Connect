@@ -76,18 +76,6 @@ local function worldedit_status_lines(player_name)
     local wea = rawget(_G, "worldeditadditions")
     lines[#lines + 1] = "WorldEditAdditions modpath: " .. tostring((core.get_modpath and core.get_modpath("worldeditadditions")) or "not found")
     lines[#lines + 1] = "WorldEditAdditions global table: " .. tostring(type(wea) == "table")
-    local root = rawget(_G, "llm_connect")
-    local skills = root and (root.skills or root.skills_subsystem or root.registry)
-    if skills and skills.get_status then
-        local ok, status = pcall(skills.get_status, player_name or "")
-        if ok and type(status) == "table" then
-            for _, item in ipairs(status) do
-                if item.id == "worldedit_agent" then
-                    lines[#lines + 1] = "worldedit_agent skill: loaded=true available=" .. tostring(item.available) .. " enabled=" .. tostring(item.enabled) .. " effective=" .. tostring(item.effective)
-                end
-            end
-        end
-    end
     return lines
 end
 
@@ -404,10 +392,10 @@ local function register_builtin_sections()
         content = table.concat({
             "Use llm_connect.context when you need details that are not in the compact system prompt.",
             "Available calls inside lua_action:",
-            "  local doc = llm_connect.context.load('worldedit') -- alias for skills.worldedit_agent",
-            "  local doc = llm_connect.context.load('skills.worldedit_agent') -- exact section id",
             "  local keys = llm_connect.context.keys() -- sections plus glossary aliases",
-            "  local hits = llm_connect.context.search('worldedit cube node') -- fallback only; returns {ok,count,sections={...}}",
+            "  local list = llm_connect.context.list_sections() -- available section ids",
+            "  local doc = llm_connect.context.load('<alias-or-section-id>')",
+            "  local hits = llm_connect.context.search('<query>') -- fallback only; returns {ok,count,sections={...}}",
             "load()/lookup()/get_section() return {ok,id,title,summary,content,message}. Read docs from doc.content.",
             "Do not test doc.commands or doc.api after context.load(); those fields are not part of the context result.",
             "Prefer load()/lookup() with exact ids or glossary aliases. Use search() only if no alias/id is known.",
@@ -466,7 +454,7 @@ local function register_builtin_sections()
     M.register_section({
         id = "mods.worldedit.status",
         title = "WorldEdit installation and API status",
-        summary = "Detects whether WorldEdit is installed, loaded, available as a Lua API table, and whether the worldedit_agent skill is active.",
+        summary = "Detects whether WorldEdit is installed, loaded, and available as a Lua API table.",
         tags = {"worldedit", "mod", "status", "skill", "building"},
         required_priv = "llm_agent",
         dynamic = true,
@@ -477,7 +465,7 @@ local function register_builtin_sections()
                 local p = player:get_pos()
                 lines[#lines + 1] = string.format("Current player position: (%.1f, %.1f, %.1f)", p.x, p.y, p.z)
             end
-            lines[#lines + 1] = "Interpretation: modpath found means installed. A global worldedit table with functions means callable Lua API. The worldedit_agent skill may still be disabled per player; enable it in the Skills panel before calling llm_connect.skills.worldedit_agent.run(...)."
+            lines[#lines + 1] = "Interpretation: modpath found means installed. A global worldedit table with functions means callable Lua API."
             return table.concat(lines, "\n")
         end,
     })
@@ -520,11 +508,6 @@ M.register_aliases({
     nodes = "luanti.registered_nodes.preview",
     node_registry = "luanti.registered_nodes.preview",
     materials = "luanti.registered_nodes.preview",
-    worldedit = "skills.worldedit_agent",
-    worldedit_agent = "skills.worldedit_agent",
-    building = "skills.worldedit_agent",
-    commands = "skills.command_agent",
-    command_agent = "skills.command_agent",
 })
 
 register_builtin_sections()

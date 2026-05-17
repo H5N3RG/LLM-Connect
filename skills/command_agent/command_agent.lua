@@ -1,16 +1,11 @@
 -- ===========================================================================
---  skills/command_agent/command_agent.lua — LLM Connect 1.0
+--  skills/command_agent/command_agent.lua — LLM Connect Runtime Agent
 --  author: H5N3RG
 --  license: LGPL-3.0-or-later
 --
---  Baseline agent skill for controlled chatcommand execution.
---  This addon acts as the explicit on/off gate for agent mode in main_gui:
---    - enabled  => send dispatches through agent.lua
---    - disabled => send stays plain chat
---
---  It also exposes a very small chatcommand bridge so the agent can inspect
---  and execute registered chatcommands when the player deliberately enables
---  this skill for the current session.
+--  System-facing runtime skill for controlled Luanti actions.
+--  Chatcommands remain as a compatibility fallback, but the preferred contract
+--  is direct runtime execution through core_executor policy.
 -- ===========================================================================
 
 local core = core
@@ -127,6 +122,78 @@ local function run_chatcommand(args, player_name)
     }
 end
 
+local function get_runtime()
+    local root = rawget(_G, "llm_connect")
+    return type(root) == "table" and root.runtime or nil
+end
+
+local function summarize_runtime_result(result)
+    if type(result) ~= "table" then return "runtime returned no result" end
+    if result.error and result.error ~= "" then return tostring(result.error) end
+    if result.output and result.output ~= "" then return tostring(result.output) end
+    if result.return_value ~= nil then return "runtime returned " .. tostring(result.return_value) end
+    return result.ok and "runtime execution succeeded" or "runtime execution failed"
+end
+
+local function precheck_lua(args, player_name)
+    player_name = effective_player_name(player_name)
+    args = args or {}
+    local code = tostring(args.code or args.lua or "")
+    if code:match("^%s*$") then
+        return { ok = false, success = false, message = "code is empty" }
+    end
+    local runtime = get_runtime()
+    if not runtime or type(runtime.precheck) ~= "function" then
+        return { ok = false, success = false, message = "runtime precheck unavailable" }
+    end
+    local result = runtime.precheck(player_name, code, {
+        purpose = "skill",
+        required_priv = "llm_agent",
+        bypass_safety_filters = args.bypass_safety_filters == true,
+    })
+    return {
+        ok = result and result.ok == true,
+        success = result and result.ok == true,
+        message = result and result.ok and "precheck passed"
+            or ("precheck failed: " .. table.concat((result and result.issues) or {"unknown issue"}, "; ")),
+        data = result,
+    }
+end
+
+local function execute_lua(args, player_name)
+    player_name = effective_player_name(player_name)
+    args = args or {}
+    local code = tostring(args.code or args.lua or "")
+    if code:match("^%s*$") then
+        return { ok = false, success = false, message = "code is empty" }
+    end
+    local max_bytes = tonumber(args.max_bytes or 16000) or 16000
+    if #code > max_bytes then
+        return { ok = false, success = false, message = "code exceeds max_bytes=" .. tostring(max_bytes) }
+    end
+
+    local runtime = get_runtime()
+    if not runtime or type(runtime.execute) ~= "function" then
+        return { ok = false, success = false, message = "runtime executor unavailable" }
+    end
+
+    local result = runtime.execute(player_name, code, {
+        purpose = "skill",
+        required_priv = "llm_agent",
+        sandbox = args.sandbox ~= false,
+        allow_skills = args.allow_skills == true,
+        precheck = args.precheck ~= false,
+        bypass_safety_filters = args.bypass_safety_filters == true,
+    })
+    local ok = type(result) == "table" and result.ok == true
+    return {
+        ok = ok,
+        success = ok,
+        message = summarize_runtime_result(result),
+        data = result,
+    }
+end
+
 local function set_time(args, player_name)
     args = args or {}
     local time = tonumber(args.time or args.timeofday or args.value)
@@ -139,25 +206,40 @@ local function set_time(args, player_name)
     end
     if time == 24000 then time = 0 end
 
+    if type(core.set_timeofday) == "function" then
+        local ok, err = pcall(core.set_timeofday, time / 24000)
+        if not ok then
+            return { ok = false, success = false, message = "set_timeofday failed: " .. tostring(err) }
+        end
+        return {
+            ok = true,
+            success = true,
+            message = "Time set to " .. tostring(time),
+            data = { time = time, method = "core.set_timeofday" },
+        }
+    end
+
     local result = run_chatcommand({ command = "/time " .. tostring(time) }, player_name)
     if result.ok then
         result.message = "Time set to " .. tostring(time)
         result.data = result.data or {}
         result.data.time = time
+        result.data.method = "chatcommand_fallback"
     end
     return result
 end
 
 local function get_context(player_name)
     local player = get_player(player_name)
-    if not player then return "Command Agent: player not found" end
+    if not player then return "Runtime Agent: player not found" end
     local pos = player:get_pos()
     return table.concat({
-        "Command Agent skill is active.",
-        "Use it for chatcommand-driven actions when appropriate.",
+        "Runtime Agent skill is active (registered as command_agent for compatibility).",
+        "Use it for controlled runtime Lua actions and small direct system operations.",
         string.format("Player position: (%d,%d,%d)", math.floor(pos.x), math.floor(pos.y), math.floor(pos.z)),
-        "Important: Prefer the most specific command_agent function available. Use run_chatcommand only when no direct function covers the task.",
-        "Time changes: use set_time({time=18000}, player_name). Do not call core.set_time; it is not part of the safe runtime API.",
+        "Preferred: execute_lua({code='return {done=true}'}, player_name) for runtime-safe Lua through core_executor policy.",
+        "Use run_chatcommand only when no direct function or runtime-safe Lua covers the task.",
+        "Time changes: use set_time({time=18000}, player_name). It uses native core.set_timeofday when available.",
     }, "\n")
 end
 
@@ -170,6 +252,10 @@ local function run_tool(tool_name, args, player_name)
         return run_chatcommand(args, player_name)
     elseif tool_name == "set_time" then
         return set_time(args, player_name)
+    elseif tool_name == "precheck_lua" then
+        return precheck_lua(args, player_name)
+    elseif tool_name == "execute_lua" or tool_name == "run_lua" then
+        return execute_lua(args, player_name)
     end
 
     return { ok = false, success = false, message = "unknown tool '" .. tostring(tool_name) .. "'" }
@@ -183,6 +269,9 @@ root.skills.command_agent = {
     list_chatcommands = function(args, player_name) return list_commands(args or {}, player_name) end,
     run_chatcommand = function(args, player_name) return run_chatcommand(args or {}, player_name) end,
     set_time = function(args, player_name) return set_time(args or {}, player_name) end,
+    precheck_lua = function(args, player_name) return precheck_lua(args or {}, player_name) end,
+    execute_lua = function(args, player_name) return execute_lua(args or {}, player_name) end,
+    run_lua = function(args, player_name) return execute_lua(args or {}, player_name) end,
     execute = function(a, b)
         -- Compatibility for common model mistakes. The documented API remains
         -- run_chatcommand({ command = "/time 6000" }, player_name).
@@ -211,26 +300,37 @@ root.skills.command_agent = {
 if root.context and type(root.context.register_section) == "function" then
     root.context.register_section({
         id = "skills.command_agent",
-        title = "Command Agent skill manual",
-        summary = "Controlled chatcommand discovery and execution API.",
-        tags = {"skill", "command_agent", "chatcommand", "commands"},
+        title = "Runtime Agent skill manual",
+        summary = "Controlled runtime Lua execution, direct system helpers, and chatcommand fallback.",
+        tags = {"skill", "command_agent", "runtime_agent", "lua", "commands"},
         required_priv = "llm_agent",
         provider = function(player_name)
             return table.concat({
                 get_context(player_name),
                 "",
                 "Callable functions:",
+                "  llm_connect.skills.command_agent.execute_lua({ code = 'return { done=true, message=\"ok\" }' }, player_name)",
+                "  llm_connect.skills.command_agent.precheck_lua({ code = 'return 1' }, player_name)",
                 "  llm_connect.skills.command_agent.set_time({ time = 18000 }, player_name)",
                 "  llm_connect.skills.command_agent.list_chatcommands({ only_allowed = true }, player_name)",
                 "  llm_connect.skills.command_agent.run_chatcommand({ command = '/time 6000' }, player_name)",
+                "  llm_connect.skills.command_agent.run('execute_lua', { code = 'print(player_name)' }, player_name)",
                 "  llm_connect.skills.command_agent.run('set_time', { time = 18000 }, player_name)",
-                "For time changes, prefer set_time(). Do not call core.set_time; it is not available in the safe runtime.",
+                "execute_lua routes through llm_connect.runtime/core_executor and respects execution policy, precheck, and sandbox settings.",
+                "For time changes, prefer set_time(); it is native when core.set_timeofday exists and falls back to /time only if needed.",
                 "Do not call execute(); it is only a fallback compatibility alias.",
-                "Use this skill only when there is no more specific direct skill for the task.",
+                "Use run_chatcommand only when no direct helper or runtime-safe Lua operation covers the task.",
                 "Always include player_name as second argument.",
             }, "\n")
         end,
     })
+    if type(root.context.register_aliases) == "function" then
+        root.context.register_aliases({
+            runtime_agent = "skills.command_agent",
+            command_agent = "skills.command_agent",
+            commands = "skills.command_agent",
+        })
+    end
 end
 
 if not (root.registry and type(root.registry.register_skill) == "function") then
@@ -240,14 +340,15 @@ end
 
 root.registry.register_skill({
     id = "command_agent",
-    label = "Command Agent",
-    version = "1.2.0-dev",
-    description = "Lua-first skill for controlled chatcommand discovery and execution.",
+    label = "Runtime Agent",
+    version = "1.3.0-dev",
+    description = "Lua-first runtime primitive skill: controlled Lua execution, direct system helpers, and chatcommand fallback.",
     required_priv = "llm_agent",
     default_enabled = false,
     context_section = "skills.command_agent",
+    context_aliases = {"runtime_agent", "command_agent", "commands"},
     get_context = get_context,
-    tool_count = 3,
+    tool_count = 5,
 })
 
 core.log("action", "[command_agent] loaded as Lua-first skill")

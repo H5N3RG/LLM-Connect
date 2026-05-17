@@ -18,6 +18,9 @@ and controlled root overrides.
 - `core.set_time` is not part of the safe runtime API; use
   `llm_connect.skills.command_agent.set_time({time=...}, player_name)` when
   `command_agent` is active.
+- Skills may call `llm_connect.runtime.execute(..., {purpose="skill"})` as a
+  controlled primitive. Runtime policy, precheck, and sandboxing remain the
+  authority.
 
 ## Nicht-Ziele
 
@@ -45,6 +48,8 @@ and controlled root overrides.
 ## Fehlerbilder
 
 - `attempt to call field 'set_time'`: model guessed unavailable safe-core API.
+- Skill-level Lua execution fails despite valid code: check `purpose="skill"`,
+  `required_priv="llm_agent"`, precheck output, and root override settings.
 - Undeclared globals in storage modules: dependency binding is relying on global
   names instead of `llm_connect.*`.
 - Root action behaves differently from normal action: check
