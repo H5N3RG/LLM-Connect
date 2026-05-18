@@ -313,20 +313,39 @@ local function mark_context_continuation(result)
     if not result or not (result.success or result.ok) then return end
     if result.is_context_action ~= true then return end
 
+    local explicit_continue = false
+    if type(result.return_value) == "table" then
+        explicit_continue = result.return_value.continue == true or result.return_value.done == false
+    end
+
     -- Context lookups are intermediate only when they yielded useful context.
-    -- Empty/failed lookups should stop instead of creating search fog loops.
+    -- Empty/failed lookups usually stop instead of creating search fog loops,
+    -- except when the action explicitly requested another iteration. In that
+    -- case, pass the lookup failure forward so the next model turn can repair
+    -- the context key or proceed with already cached documentation.
     if type(result.return_value) == "table" then
         local rv = result.return_value
         local has_content = type(rv.content) == "string" and rv.content ~= ""
         local has_hits = type(rv.sections) == "table" and #rv.sections > 0
         local recent = result.retrieved_context
+        local recent_failed = false
         if type(recent) == "table" then
+            recent_failed = recent.ok == false
             has_content = has_content or (type(recent.content) == "string" and recent.content ~= "")
             has_hits = has_hits or (type(recent.sections) == "table" and #recent.sections > 0)
         end
         if rv.ok ~= false and (has_content or has_hits) then
             rv.done = false
             rv.continue = true
+        elseif explicit_continue then
+            rv.done = false
+            rv.continue = true
+            if recent_failed and type(recent.message) == "string" and recent.message ~= "" then
+                rv.message = "Context lookup failed: " .. recent.message .. ". Continue using available cached context or list valid context keys."
+                result.context_lookup_failed = true
+            elseif not rv.message or rv.message == "" then
+                rv.message = "Context lookup returned no content. Continue using available cached context or list valid context keys."
+            end
         else
             rv.done = true
             rv.continue = false
@@ -462,8 +481,6 @@ local function run_iteration(player_name, user_message, state, callbacks)
 
         local split = parser.split_dual_channel_response(response.content or "")
         local visible = trim(split.visible_text or "")
-        state_store.append_visible(state, visible)
-
         local actions = split.actions or {}
         live_emit("parser", player_name, "dual-channel split", {
             visible_chars = #visible,
@@ -490,6 +507,14 @@ local function run_iteration(player_name, user_message, state, callbacks)
         })
         live_emit("middleware", player_name, "decision", decision)
         local continue = decision.continue == true
+
+        -- Visible text that accompanies lua_action is step/status text. Keep it
+        -- out of the final answer so planning chatter from intermediate
+        -- iterations does not masquerade as completion. Pure text turns remain
+        -- normal chat responses.
+        if #actions == 0 then
+            state_store.append_visible(state, visible)
+        end
 
         if continue and state.iteration < state.max_iterations then
             return run_iteration(player_name, user_message, state, callbacks)
@@ -542,6 +567,38 @@ function M.run(player_name, message, options, callbacks)
     return true
 end
 
+function M.resume(player_name, callbacks)
+    callbacks = callbacks or {}
+    if not can_agent(player_name) then
+        if callbacks.on_error then callbacks.on_error("missing privilege: llm_agent") end
+        return false
+    end
+
+    local state = get_state(player_name)
+    if state.running then
+        if callbacks.on_error then callbacks.on_error("agent already running") end
+        return false
+    end
+    if not state.message or state.message == "" then
+        if callbacks.on_error then callbacks.on_error("no resumable agent task") end
+        return false
+    end
+    if state.iteration >= state.max_iterations then
+        if callbacks.on_error then callbacks.on_error("agent iteration limit reached") end
+        return false
+    end
+
+    state.running = true
+    state.cancelled = false
+    live_emit("agent", player_name, "run resumed", {
+        iteration = state.iteration,
+        max_iterations = state.max_iterations,
+        message = tostring(state.message),
+    })
+    run_iteration(player_name, state.message, state, callbacks)
+    return true
+end
+
 function M.cancel(player_name)
     state_store.cancel(player_name)
     return true
@@ -549,6 +606,18 @@ end
 
 function M.is_running(player_name)
     return state_store.is_running(player_name)
+end
+
+function M.request_permission(player_name, request)
+    return state_store.request_permission(player_name, request)
+end
+
+function M.get_pending_permission(player_name)
+    return state_store.get_pending_permission(player_name)
+end
+
+function M.resolve_permission(player_name, allowed)
+    return state_store.resolve_permission(player_name, allowed == true)
 end
 
 function M.format_results(result)

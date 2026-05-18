@@ -21,6 +21,8 @@ local function default_state()
         last_failure_signature = nil,
         capability_snapshot = nil,
         options = {},
+        pending_permission = nil,
+        permission_events = {},
     }
 end
 
@@ -83,6 +85,43 @@ end
 
 function M.get_all()
     return states
+end
+
+function M.request_permission(player_name, request)
+    local state = M.get(player_name)
+    request = request or {}
+    local id = tostring(request.id or ("permit-" .. tostring(os.time and os.time() or 0)))
+    state.pending_permission = {
+        id = id,
+        kind = tostring(request.kind or "agent_action"),
+        summary = tostring(request.summary or request.message or "Agent action requires permission"),
+        detail = tostring(request.detail or ""),
+        created_at = os.time and os.time() or 0,
+        status = "pending",
+        data = request.data,
+    }
+    return state.pending_permission
+end
+
+function M.get_pending_permission(player_name)
+    return M.get(player_name).pending_permission
+end
+
+function M.resolve_permission(player_name, allowed)
+    local state = M.get(player_name)
+    local pending = state.pending_permission
+    if not pending then return nil, "no pending permission" end
+    pending.status = allowed and "permitted" or "denied"
+    pending.resolved_at = os.time and os.time() or 0
+    state.permission_events[#state.permission_events + 1] = pending
+    state.pending_permission = nil
+    state.tool_history[#state.tool_history + 1] = string.format(
+        "[Permission] %s: %s (%s)",
+        allowed and "PERMIT" or "DENY",
+        tostring(pending.summary or pending.kind or "agent action"),
+        tostring(pending.kind or "agent_action")
+    )
+    return pending
 end
 
 return M

@@ -195,7 +195,11 @@ end
 function M.lookup(player_name, key, args)
     local id, err, kind = M.resolve_id(key)
     if not id then
-        return { ok = false, key = tostring(key or ""), message = err }
+        return remember_recent_context(player_name, {
+            ok = false,
+            key = tostring(key or ""),
+            message = err,
+        })
     end
     local res = M.get_section(player_name, id, args or {})
     res.key = tostring(key or "")

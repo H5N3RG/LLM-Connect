@@ -623,13 +623,65 @@ local function compat_set_nodes(args)
     return {ok=true, message=string.format("Set %d nodes to %s", count, node), data={nodes=count}}
 end
 
+local function compat_get_node(pos)
+    if type(pos) ~= "table" then
+        return {ok=false, success=false, message="get_node: pos must be {x=..., y=..., z=...}"}
+    end
+    local x, y, z = tonumber(pos.x), tonumber(pos.y), tonumber(pos.z)
+    if not x or not y or not z then
+        return {ok=false, success=false, message="get_node: pos requires numeric x/y/z"}
+    end
+    local ipos = {x=math.floor(x), y=math.floor(y), z=math.floor(z)}
+    local node = core.get_node(ipos)
+    return {
+        ok=true,
+        success=true,
+        message=string.format("Node at (%d,%d,%d): %s", ipos.x, ipos.y, ipos.z, node and node.name or "unknown"),
+        data={pos=ipos, node=node},
+    }
+end
+
+local function compat_build_structure(args, player_name)
+    if type(args) ~= "table" then
+        return {ok=false, success=false, message="build_structure: args must be a table"}
+    end
+    local plan = {
+        nodes = args.nodes or {},
+        rows = args.rows,
+        boxes = args.boxes,
+        max_nodes = args.max_nodes,
+        absolute = args.absolute ~= false,
+    }
+    if type(args.origin) == "table" then
+        plan.origin = args.origin
+        plan.absolute = false
+    elseif type(args.pos) == "table" and args.absolute == false then
+        plan.pos = args.pos
+    end
+    return print_plan(plan, player_name)
+end
+
 -- ===========================================================================
 -- Tool runner
 -- ===========================================================================
 
 local function run_tool(tool_name, args, player_name)
     tool_name = tostring(tool_name or "")
+
+    -- Handle common swap: run('tool', 'player', {args})
+    if type(player_name) == "table" and type(args) == "string" then
+        local temp = args
+        args = player_name
+        player_name = temp
+    end
+
     if type(args) ~= "table" then args = {} end
+
+    -- Try to find player_name if missing
+    if not player_name or player_name == "" then
+        player_name = rawget(_G, "player_name")
+    end
+
     if type(player_name) ~= "string" or player_name == "" then
         return {ok=false, message="worldedit_agent: missing player_name; call run('tool_name', {args...}, player_name)"}
     end
@@ -640,6 +692,10 @@ local function run_tool(tool_name, args, player_name)
     elseif tool_name == "preview_plan" then
         args.dry_run = true
         return print_plan(args, player_name)
+    elseif tool_name == "build_structure" then
+        return compat_build_structure(args, player_name)
+    elseif tool_name == "get_node" then
+        return compat_get_node(args.pos or args)
     end
 
     -- Agent-friendly high-level builders. These use native node placement.
@@ -1072,6 +1128,12 @@ local function do_register()
             -- Compatibility for common model mistakes. Prefer
             -- run('set_region', {node=...}, player_name) after setting pos1/pos2.
             return compat_set_nodes(args or {})
+        end,
+        get_node = function(pos)
+            return compat_get_node(pos)
+        end,
+        build_structure = function(args, player_name)
+            return compat_build_structure(args or {}, player_name)
         end,
         get_context = get_context,
         snapshot = snapshot_hook,

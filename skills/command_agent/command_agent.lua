@@ -244,7 +244,15 @@ local function get_context(player_name)
 end
 
 local function run_tool(tool_name, args, player_name)
+    -- Handle common swap: run('tool', 'player', {args})
+    if type(player_name) == "table" and type(args) == "string" then
+        local temp = args
+        args = player_name
+        player_name = temp
+    end
+
     args = args or {}
+    player_name = effective_player_name(player_name)
 
     if tool_name == "list_chatcommands" then
         return list_commands(args, player_name)
@@ -257,7 +265,6 @@ local function run_tool(tool_name, args, player_name)
     elseif tool_name == "execute_lua" or tool_name == "run_lua" then
         return execute_lua(args, player_name)
     end
-
     return { ok = false, success = false, message = "unknown tool '" .. tostring(tool_name) .. "'" }
 end
 

@@ -6,14 +6,23 @@ local M = {}
 
 local function wants_continue(result)
     if not result or not (result.success or result.ok) then return false end
-    if result.is_context_action == true then
-        local rv = result.return_value
-        return type(rv) == "table" and rv.continue == true and rv.done ~= true
-    end
+
     local rv = result.return_value
-    if type(rv) ~= "table" then return false end
+    if type(rv) ~= "table" then
+        return false
+    end
+
+    -- Explicit protocol
     if rv.continue == true then return true end
-    if rv.done == false then return true end
+    if rv.done == true then return false end
+
+    -- Context-only actions are intermediate steps once the runtime normalized
+    -- their result to "not done".
+    if result.is_context_action == true then return true end
+
+    -- If it's a successful skill action but doesn't say it's done,
+    -- we might want to allow the model one more turn to acknowledge or follow up.
+    -- However, to avoid infinite loops, we are conservative here.
     return false
 end
 

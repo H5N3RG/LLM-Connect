@@ -116,6 +116,28 @@ local function create_safe_llm_connect(player_name, opts)
         end
     end
 
+    if allow_skills then
+        proxy.agent = {
+            request_permission = function(request)
+                local agent = root.agent
+                if not agent or type(agent.request_permission) ~= "function" then
+                    return { ok = false, message = "agent permission API unavailable" }
+                end
+                local pending = agent.request_permission(player_name, request or {})
+                return {
+                    ok = pending ~= nil,
+                    done = false,
+                    continue = false,
+                    permission_required = pending ~= nil,
+                    id = pending and pending.id,
+                    kind = pending and pending.kind,
+                    summary = pending and pending.summary,
+                    message = pending and ("Permission requested: " .. tostring(pending.summary or pending.kind)) or "permission request failed",
+                }
+            end,
+        }
+    end
+
     return proxy
 end
 

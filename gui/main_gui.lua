@@ -138,6 +138,7 @@ local MSG_STATUS_H        = 0.34   -- Additional meta line for live feedback
 local MSG_TEXT_PAD_B      = 0.12   -- Bottom spacing of the text area
 local MSG_PAD_V           = 0.18   -- Additional vertical card padding
 local MSG_GAP             = 0.16   -- Gap between messages
+local STEP_LINE_H         = 0.34   -- Compact agent step ledger row height
 local USER_CARD_INSET     = 1.15   -- Shift user cards slightly to the right
 local ASSISTANT_CARD_INSET = 0.10  -- Assistant cards are almost full width
 
@@ -155,12 +156,23 @@ end
 local function estimate_msg_height(msg, card_w)
     local text = (msg and msg.content) or ""
     local status_line = (msg and msg.status_line) or ""
+    local steps = (msg and type(msg.steps) == "table") and msg.steps or {}
     local text_lines = estimate_wrapped_lines(text, math.max(2.0, card_w - 0.34))
     local h = MSG_HEADER_H + (text_lines * LINE_H) + MSG_TEXT_PAD_B + MSG_PAD_V
     if status_line ~= "" then
         h = h + MSG_STATUS_H
     end
+    if #steps > 0 then
+        h = h + math.min(#steps, 8) * STEP_LINE_H + 0.14
+    end
     return h
+end
+
+local function compact_line(text, max_len)
+    text = tostring(text or ""):gsub("\n+", " "):gsub("%s+", " ")
+    max_len = max_len or 96
+    if #text > max_len then return text:sub(1, max_len - 3) .. "..." end
+    return text
 end
 
 local function build_chat_history(fs, session, x, y, w, scroll_h)
@@ -210,6 +222,7 @@ local function build_chat_history(fs, session, x, y, w, scroll_h)
             local is_user     = msg.role == "user"
             local content     = msg.content or ""
             local status_line = msg.status_line or ""
+            local steps       = type(msg.steps) == "table" and msg.steps or {}
 
             -- Slightly offset cards = more chat-like than log-style full width
             local lx     = is_user and USER_CARD_INSET or ASSISTANT_CARD_INSET
@@ -245,6 +258,21 @@ local function build_chat_history(fs, session, x, y, w, scroll_h)
                     core.colorize(is_user and "#6f89b3" or "#6ab47c",
                         core.formspec_escape(status_line))))
                 text_y = text_y + MSG_STATUS_H
+            end
+
+            if #steps > 0 then
+                local first = math.max(1, #steps - 7)
+                for si = first, #steps do
+                    local step = steps[si]
+                    local mark = tostring(step.mark or "•")
+                    local color = tostring(step.color or "#8a8a8a")
+                    local line = compact_line(step.text or "", 86)
+                    table.insert(fs, string.format("label[%.2f,%.2f;%s]",
+                        lx + 0.20, text_y + 0.02,
+                        core.colorize(color, mark .. " " .. core.formspec_escape(line))))
+                    text_y = text_y + STEP_LINE_H
+                end
+                text_y = text_y + 0.08
             end
 
             -- Message text as read-only textarea (name="" → no caching)
@@ -287,6 +315,8 @@ function M.show(name)
     end
 
     local session = get_session(name)
+    local agent = get_agent()
+    local pending_permission = agent and agent.get_pending_permission and agent.get_pending_permission(name) or nil
 
     local W        = 16.0
     local H        = 12.0
@@ -386,7 +416,6 @@ function M.show(name)
     end
 
     -- Agent running indicator
-    local agent = get_agent()
     if agent and agent.is_running(name) then
         table.insert(fs, "style[agent_cancel;bgcolor=#3a1a1a;textcolor=#ffaaaa]")
         table.insert(fs, "button[" .. PAD .. ",0.95;2.8,0.65;agent_cancel;✕ Stop Agent]")
@@ -409,6 +438,20 @@ function M.show(name)
     -- ── Toolbar ──────────────────────────────────────────────
     local tb_y = input_y + INPUT_H + PAD
     table.insert(fs, "button[" .. PAD .. "," .. tb_y .. ";2.8,0.75;clear;Clear Chat]")
+    if pending_permission then
+        table.insert(fs, "style[agent_permit;bgcolor=#183018;textcolor=#bfffc0]")
+        table.insert(fs, string.format("button[%.2f,%.2f;2.15,0.75;agent_permit;%s]",
+            PAD + 3.0, tb_y, core.formspec_escape("● Permit")))
+        table.insert(fs, "tooltip[agent_permit;"
+            .. core.formspec_escape("Allow pending agent action: " .. tostring(pending_permission.summary or pending_permission.kind or "permission request"))
+            .. "]")
+        table.insert(fs, "style[agent_deny;bgcolor=#301818;textcolor=#ffc0c0]")
+        table.insert(fs, string.format("button[%.2f,%.2f;1.85,0.75;agent_deny;%s]",
+            PAD + 5.25, tb_y, core.formspec_escape("● Deny")))
+        table.insert(fs, "tooltip[agent_deny;"
+            .. core.formspec_escape("Deny pending agent action: " .. tostring(pending_permission.summary or pending_permission.kind or "permission request"))
+            .. "]")
+    end
 
     core.show_formspec(name, "llm_connect:main", table.concat(fs))
 end
@@ -611,6 +654,21 @@ local function update_last_assistant_card(session, body, status_line)
     end
 end
 
+local function append_last_assistant_step(session, mark, text, color)
+    for i = #session.history, 1, -1 do
+        local msg = session.history[i]
+        if msg.role == "assistant" then
+            msg.steps = msg.steps or {}
+            msg.steps[#msg.steps + 1] = {
+                mark = mark or "•",
+                text = text or "",
+                color = color or "#8a8a8a",
+            }
+            return
+        end
+    end
+end
+
 local function should_stick_to_bottom(session)
     if not session then return false end
     local scroll = tonumber(session.chat_scroll) or 0
@@ -648,6 +706,72 @@ local function compact_status_line(iter, max_iter, plan, results)
     return string.format("%s — %s  [✓%d ✗%d]", prefix, summary, ok_count, fail_count)
 end
 
+local function result_step_line(iter, result)
+    local mark = (result and result.ok) and "✓" or "✗"
+    local color = (result and result.ok) and "#8fcf8f" or "#e07a7a"
+    local tool = tostring(result and result.tool or "action")
+    local msg = tostring(result and (result.message or result.error) or "")
+    return mark, string.format("Step %d: %s — %s", tonumber(iter) or 0, tool, compact_line(msg, 86)), color
+end
+
+local function make_agent_callbacks(name, session, iter_cap)
+    return {
+        on_thought = function(thought)
+            local preview = tostring(thought or "thinking")
+            preview = preview:gsub("\n+", " "):gsub("%s+", " ")
+            if #preview > 80 then
+                preview = preview:sub(1, 77) .. "..."
+            end
+            update_last_assistant_card(session, nil, "💭 " .. preview)
+            maybe_scroll_to_bottom(session)
+            M.show(name)
+        end,
+        on_step = function(iter, plan, results)
+            local body = nil
+            local first_tool_line
+            for _, r in ipairs(results or {}) do
+                if r.tool ~= "*" then
+                    local mark = r.ok and "✓" or "✗"
+                    local msg = tostring(r.message or ""):gsub("\n+", " "):gsub("%s+", " ")
+                    first_tool_line = string.format("%s %s — %s", mark, tostring(r.tool), msg)
+                    local step_mark, step_text, step_color = result_step_line(iter, r)
+                    append_last_assistant_step(session, step_mark, step_text, step_color)
+                    break
+                end
+            end
+            if not first_tool_line then
+                append_last_assistant_step(session, "•", "Step " .. tostring(iter) .. ": " .. compact_line(plan, 86), "#8a9ccf")
+            end
+            if first_tool_line and #first_tool_line > 92 then
+                first_tool_line = first_tool_line:sub(1, 89) .. "..."
+            end
+            if first_tool_line and first_tool_line ~= "" then
+                body = first_tool_line
+            end
+            update_last_assistant_card(session, body, compact_status_line(iter, iter_cap, plan, results))
+            maybe_scroll_to_bottom(session)
+            M.show(name)
+        end,
+        on_done = function(result)
+            local agent = get_agent()
+            local pending = agent and agent.get_pending_permission and agent.get_pending_permission(name) or nil
+            if pending then
+                update_last_assistant_card(session, nil, "Permission required")
+            else
+                local summary = agent and agent.format_results and agent.format_results(result) or "(agent completed)"
+                update_last_assistant_card(session, summary, "")
+            end
+            maybe_scroll_to_bottom(session)
+            M.show(name)
+        end,
+        on_error = function(err)
+            update_last_assistant_card(session, "✗ Error: " .. tostring(err), "Agent aborted")
+            maybe_scroll_to_bottom(session)
+            M.show(name)
+        end,
+    }
+end
+
 -- ===========================================================================
 -- Send: dispatch to agent or plain chat
 -- ===========================================================================
@@ -683,50 +807,7 @@ local function do_send(name, input, session)
         local srv_max  = tonumber(core.settings:get("llm_agent_max_iterations")) or 8
         local iter_cap = math.max(1, math.min(session.iter_preference or srv_max, srv_max))
 
-        agent.run(name, input, { max_iterations = iter_cap }, {
-            on_thought = function(thought)
-                local preview = tostring(thought or "thinking")
-                preview = preview:gsub("\n+", " "):gsub("%s+", " ")
-                if #preview > 80 then
-                    preview = preview:sub(1, 77) .. "..."
-                end
-                update_last_assistant_card(session, nil, "💭 " .. preview)
-                maybe_scroll_to_bottom(session)
-                M.show(name)
-            end,
-            on_step = function(iter, plan, results)
-                local body = nil
-                local first_tool_line
-                for _, r in ipairs(results or {}) do
-                    if r.tool ~= "*" then
-                        local mark = r.ok and "✓" or "✗"
-                        local msg = tostring(r.message or ""):gsub("\n+", " "):gsub("%s+", " ")
-                        first_tool_line = string.format("%s %s — %s", mark, tostring(r.tool), msg)
-                        break
-                    end
-                end
-                if first_tool_line and #first_tool_line > 92 then
-                    first_tool_line = first_tool_line:sub(1, 89) .. "..."
-                end
-                if first_tool_line and first_tool_line ~= "" then
-                    body = first_tool_line
-                end
-                update_last_assistant_card(session, body, compact_status_line(iter, iter_cap, plan, results))
-                maybe_scroll_to_bottom(session)
-                M.show(name)
-            end,
-            on_done = function(result)
-                local summary = agent.format_results(result)
-                update_last_assistant_card(session, summary, "")
-                maybe_scroll_to_bottom(session)
-                M.show(name)
-            end,
-            on_error = function(err)
-                update_last_assistant_card(session, "✗ Error: " .. tostring(err), "Agent aborted")
-                maybe_scroll_to_bottom(session)
-                M.show(name)
-            end,
-        })
+        agent.run(name, input, { max_iterations = iter_cap }, make_agent_callbacks(name, session, iter_cap))
 
     else
         -- Plain chat mode: send history to LLM, append response
@@ -893,6 +974,40 @@ function M.handle_fields(name, formname, fields)
     elseif fields.agent_cancel and can_agent(name) then
         local agent = get_agent()
         if agent then agent.cancel(name) end
+        M.show(name)
+        return true
+
+    elseif fields.agent_permit and can_agent(name) then
+        local agent = get_agent()
+        local pending = agent and agent.resolve_permission and agent.resolve_permission(name, true)
+        if pending then
+            append_last_assistant_step(session, "✓", "Permit: " .. compact_line(pending.summary or pending.kind, 92), "#8fcf8f")
+            update_last_assistant_card(session, nil, "Permission granted — resuming")
+            local srv_max  = tonumber(core.settings:get("llm_agent_max_iterations")) or 8
+            local iter_cap = math.max(1, math.min(session.iter_preference or srv_max, srv_max))
+            if agent.resume then
+                agent.resume(name, make_agent_callbacks(name, session, iter_cap))
+            end
+        else
+            core.chat_send_player(name, "[LLM] No pending permission request.")
+        end
+        M.show(name)
+        return true
+
+    elseif fields.agent_deny and can_agent(name) then
+        local agent = get_agent()
+        local pending = agent and agent.resolve_permission and agent.resolve_permission(name, false)
+        if pending then
+            append_last_assistant_step(session, "✗", "Deny: " .. compact_line(pending.summary or pending.kind, 92), "#e07a7a")
+            update_last_assistant_card(session, "Permission denied: " .. tostring(pending.summary or pending.kind or "agent action"), "Permission denied")
+            local srv_max  = tonumber(core.settings:get("llm_agent_max_iterations")) or 8
+            local iter_cap = math.max(1, math.min(session.iter_preference or srv_max, srv_max))
+            if agent.resume then
+                agent.resume(name, make_agent_callbacks(name, session, iter_cap))
+            end
+        else
+            core.chat_send_player(name, "[LLM] No pending permission request.")
+        end
         M.show(name)
         return true
 

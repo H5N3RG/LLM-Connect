@@ -22,62 +22,70 @@ function M.action_result_message(result)
     if result.success or result.ok then
         local rv = result.return_value
         if type(rv) == "table" then
+            if rv.permission_required == true then
+                return tostring(rv.message or ("Permission requested: " .. tostring(rv.summary or rv.kind or "agent action")))
+            end
             if type(rv.content) == "string" and rv.content ~= "" then
-                return tostring(rv.message or "context loaded") .. "\n" .. rv.content
+                local preview = rv.content
+                if #preview > 1000 then preview = preview:sub(1, 1000) .. "\n... [truncated]" end
+                return tostring(rv.message or "context loaded") .. ":\n" .. preview
             end
             if type(rv.sections) == "table" then
-                local lines = { tostring(rv.message or "context sections") }
-                for _, sec in ipairs(rv.sections) do
+                local lines = { tostring(rv.message or "context sections available:") }
+                for i, sec in ipairs(rv.sections) do
+                    if i > 15 then
+                        lines[#lines + 1] = "... and more"
+                        break
+                    end
                     lines[#lines + 1] = string.format("- %s: %s", tostring(sec.id or "?"), tostring(sec.summary or sec.title or ""))
                 end
                 return table.concat(lines, "\n")
             end
-            return tostring(rv.message or rv.result or rv.status or "ok")
+            return tostring(rv.message or rv.result or rv.status or "action successful")
         end
         if result.output and result.output ~= "" then return result.output end
-        return "ok"
+        return "success"
     end
-    return tostring(result.error or "failed")
+    return "error: " .. tostring(result.error or "failed")
 end
 
 function M.action_history_entry(iteration, result)
-    local prefix = string.format(
-        "iteration %d action %d: %s — ",
-        tonumber(iteration) or 0,
-        tonumber(result and result.index) or 0,
-        (result and (result.success or result.ok)) and "ok" or "failed"
-    )
+    local idx = tonumber(result and result.index) or 0
+    local status = (result and (result.success or result.ok)) and "OK" or "FAIL"
+    local prefix = string.format("[Iter %d Action %d] %s: ", tonumber(iteration) or 0, idx, status)
 
     local rv = result and result.return_value
-    if type(rv) == "table" and type(rv.content) == "string" and rv.content ~= "" then
-        local content = rv.content
-        if #content > 6000 then content = content:sub(1, 6000) .. "\n... [context truncated]" end
-        return prefix .. tostring(rv.message or "context loaded") .. "\n" .. content
-    end
-    if type(rv) == "table" and type(rv.sections) == "table" then
-        local lines = { prefix .. tostring(rv.message or "context sections") }
-        for _, sec in ipairs(rv.sections) do
-            lines[#lines + 1] = string.format("- %s: %s", tostring(sec.id or "?"), tostring(sec.summary or sec.title or ""))
+    if type(rv) == "table" then
+        if rv.permission_required == true then
+            return prefix .. tostring(rv.message or ("Permission requested: " .. tostring(rv.summary or rv.kind or "agent action")))
         end
-        return table.concat(lines, "\n")
+        if type(rv.content) == "string" and rv.content ~= "" then
+            local content = rv.content
+            -- Keep context history lean. The model should have what it needs now.
+            if #content > 2000 then content = content:sub(1, 2000) .. "\n... [large context truncated in history]" end
+            return prefix .. tostring(rv.message or "context loaded") .. "\n" .. content
+        end
+        if type(rv.sections) == "table" then
+            local lines = { prefix .. tostring(rv.message or "available sections:") }
+            for i, sec in ipairs(rv.sections) do
+                if i > 10 then lines[#lines+1] = "- ..."; break end
+                lines[#lines + 1] = string.format("- %s: %s", tostring(sec.id or "?"), tostring(sec.summary or sec.title or ""))
+            end
+            return table.concat(lines, "\n")
+        end
     end
+
     if result and not (result.success or result.ok) then
-        local lines = { prefix .. M.one_line(result.error or result.message or "failed", 240) }
+        local lines = { prefix .. M.one_line(result.error or result.message or "failed", 300) }
         if result.action_code and result.action_code ~= "" then
-            lines[#lines + 1] = "Failed lua_action code:"
-            lines[#lines + 1] = "```lua"
-            lines[#lines + 1] = tostring(result.action_code)
-            lines[#lines + 1] = "```"
+            lines[#lines + 1] = "Attempted code:"
+            lines[#lines + 1] = "```lua\n" .. tostring(result.action_code) .. "\n```"
         end
-        if result.traceback and result.traceback ~= "" then
-            lines[#lines + 1] = "Traceback/error detail:"
-            lines[#lines + 1] = M.one_line(result.traceback, 1200)
-        end
-        lines[#lines + 1] = "Repair instruction: either request focused context first, or emit a corrected lua_action. Do not repeat the same failing action."
+        lines[#lines + 1] = "Please fix the error or request documentation if an API is unclear."
         return table.concat(lines, "\n")
     end
 
-    return prefix .. M.one_line(result and (result.message or result.error or "") or "", 180)
+    return prefix .. M.one_line(result and (result.message or result.error or "ok") or "ok", 200)
 end
 
 function M.format_results(result)

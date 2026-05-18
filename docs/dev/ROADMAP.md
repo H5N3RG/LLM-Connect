@@ -78,6 +78,10 @@ Should have:
   `{ ok=boolean, success=boolean, message=string, data=table }`.
 - Tool availability exposed to context, including why a tool is unavailable.
 - Compatibility aliases logged as compatibility use, not preferred API.
+- Machine-readable tool manifests for each skill: tool name, argument schema,
+  return schema, safety class, limits, examples, and repair hints.
+- Prompt builder uses tool manifests instead of prose-only manuals where
+  possible.
 
 Deferred:
 
@@ -109,6 +113,130 @@ Deferred:
 
 - Multi-user approval workflows.
 - Long-lived background agents.
+
+## 1.5.0 Agent Action Language
+
+Goal:
+
+Reduce free-form Lua generation by introducing a small declarative action
+language for model-authored tool use. Lua remains the internal runtime, but the
+model should usually emit one validated action spec instead of custom Lua
+algorithms.
+
+Rationale:
+
+- Free-form Lua is too easy for models to misuse: invented APIs, variables
+  shared across isolated `lua_action` blocks, oversized world operations, and
+  visible planning text that does not correspond to completed work.
+- Plain JSON is not expressive enough for Luanti agent workflows: actions need
+  player-relative references, resumable workflow state, permissions, repair
+  hints, and skill-specific defaults.
+- A Lua-table envelope keeps Luanti integration simple while giving the model a
+  constrained API surface.
+
+Preferred shape:
+
+```lua
+return llm_connect.action({
+  do_ = "mapgen_painter.terrain_scene",
+  at = "@player",
+  permit = "world_write",
+  args = {
+    style = "alpine",
+    features = {
+      { type = "mountain_ring", radius = 90, height = 45 },
+      { type = "plateau", shape = "cylinder", radius = 28, height = 18 },
+      { type = "lake", radius = 16, depth = 3 },
+      { type = "rivers", count = 3, flow = "outward" },
+    },
+  },
+})
+```
+
+Must have:
+
+- `llm_connect.action(spec)` sandbox API with strict validation.
+- Standard envelope fields: `do_`, `args`, `at`, `permit`, `continue`,
+  `await_user`, and optional `id`.
+- Router from `do_ = "skill.tool"` to the attached skill's manifest-backed
+  tool dispatcher.
+- Safety/permission integration before execution, including pending
+  `Permit`/`Deny` GUI state.
+- Clear error results designed for repair loops, not just human-readable
+  failures.
+- Prompt rule: prefer one documented action spec; avoid loops/custom
+  algorithms unless explicitly needed.
+
+Should have:
+
+- Declarative references such as `@player`, `@selection`, `@look_target`, and
+  relative offsets.
+- Dry-run/preview convention for world writes.
+- Step ledger rendering of the action spec summary.
+- Conversion helpers so existing `skill.run(tool, args, player_name)` remains
+  the execution backend.
+
+Deferred:
+
+- A text DSL separate from Lua-table syntax.
+- General-purpose programming constructs in the action language.
+- External network tools beyond existing provider/runtime boundaries.
+
+Migration notes:
+
+- Do not remove `lua_action`; narrow its preferred use to action envelopes and
+  small glue code.
+- Keep free-form Lua as a root/dev fallback, not the default model workflow.
+- Skills with complex domains should expose high-level tools rather than
+  forcing the model to hand-roll algorithms.
+
+## 2.0.0 Luanti-First Maturity
+
+Goal:
+
+Reach a stable Luanti-focused agent platform with reliable multi-skill
+workflows and a mature Smart Lua IDE experience. Until 2.0, do not introduce a
+generic voxel-engine abstraction or architecture for hypothetical hosts.
+
+Scope:
+
+- Luanti remains the only implementation target before 2.0.
+- Architecture work should serve concrete Luanti workflows: formspec GUI,
+  chatcommands, mod storage, context lookup, skill routing, permissions,
+  VoxelManip/world operations, and in-game development UX.
+- Keep the core agent loop, action language, manifests, tracing, and provider
+  clients cleanly separated from direct Luanti calls where that separation is
+  already natural.
+- Do not design a general host API for arbitrary voxel engines.
+- Do not block Luanti features on future Minecraft portability.
+
+Must have:
+
+- Stable multi-skill workflow: attach skills, load context, select tools,
+  execute actions, repair errors, request permission, resume, and summarize
+  completion without losing the task thread.
+- Smart Lua IDE: usable in-game/script workflow for inspecting available APIs,
+  examples, action specs, recent errors, traces, and repair hints.
+- Skill contracts and manifests are complete enough that the model can discover
+  tools from local documentation instead of inventing APIs.
+- Permission and safety model is consistent across world writes, command
+  execution, mapgen operations, and future high-risk skills.
+- Trace logs are structured enough to debug failed iterations without guessing
+  whether the provider, prompt, executor, GUI, or skill caused the failure.
+
+Deferred:
+
+- Minecraft/Fabric/Forge/Paper port planning.
+- Shared Luanti/Minecraft host adapter.
+- Generic voxel-engine platform layer.
+- External skill marketplace.
+
+Revisit after 2.0:
+
+- Evaluate a Minecraft port from real 2.0 contracts and logs, not from
+  speculative abstractions.
+- Extract shared concepts only if the second concrete host proves they are
+  genuinely common.
 
 ## Later
 
