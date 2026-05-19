@@ -173,12 +173,13 @@ core.register_privilege("llm_root", {
 })
 
 -- ===========================================================================
--- 3. Optional raw prompt/response trace logger
+-- 3. Agent debugging: raw prompt files and root-only live trace
 -- ===========================================================================
 
-local prompt_trace = load_module(AGENT_DIR .. "/agent_trace.lua", "prompt_trace", false)
+local agent_debug = load_module(AGENT_DIR .. "/agent_debug.lua", "agent_debug", false) or {}
+local prompt_trace = agent_debug.prompt_trace
 _G.llm_connect.prompt_trace = prompt_trace
-local live_trace = load_module(AGENT_DIR .. "/live_trace.lua", "live_trace", false)
+local live_trace = agent_debug.live_trace
 _G.llm_connect.live_trace = live_trace
 _G.live_trace = live_trace
 _G.prompt_trace = prompt_trace
@@ -256,7 +257,7 @@ _G.trusted_mods = trusted_mods
 _G.core_executor = core_executor
 
 -- ===========================================================================
--- 9. Agent middleware modules
+-- 9. Agent support modules
 -- ===========================================================================
 
 local agent_modules = load_module(AGENT_DIR .. "/agent_init.lua", "agent_init", true)

@@ -1,5 +1,5 @@
 -- ===========================================================================
---  agent_init.lua — loader for the 1.2 agent middleware modules
+--  agent_init.lua — loader for the 1.2 agent modules
 -- ===========================================================================
 
 local core = core
@@ -15,12 +15,9 @@ local AGENT_DIR = mod_dir .. "/agent"
 
 local files = {
     agent_state = "agent_state.lua",
-    agent_capabilities = "agent_capabilities.lua",
-    agent_context_cache = "agent_context_cache.lua",
-    agent_result = "agent_result.lua",
-    agent_retry = "agent_retry.lua",
-    agent_middleware = "agent_middleware.lua",
-    agent_prompt_builder = "agent_prompt_builder.lua",
+    agent_communication = "agent_communication.lua",
+    agent_context = "agent_context.lua",
+    agent_flow = "agent_flow.lua",
 }
 
 local function load_one(name, filename)
@@ -48,12 +45,9 @@ end
 -- needlessly annoying.
 local ordered = {
     "agent_state",
-    "agent_capabilities",
-    "agent_context_cache",
-    "agent_result",
-    "agent_retry",
-    "agent_middleware",
-    "agent_prompt_builder",
+    "agent_communication",
+    "agent_context",
+    "agent_flow",
 }
 
 for _, name in ipairs(ordered) do
@@ -62,6 +56,6 @@ end
 
 _G.llm_connect.agent_modules = M
 
-core.log("action", "[agent_init] agent middleware modules loaded")
+core.log("action", "[agent_init] agent modules loaded")
 
 return M

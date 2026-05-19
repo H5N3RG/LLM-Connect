@@ -37,14 +37,14 @@ local function load_agent_module(global_name, filename)
     local path = AGENT_DIR .. "/" .. filename
     local ok, module = pcall(dofile, path)
     if not ok then
-        local msg = "failed to load middleware module " .. tostring(global_name) .. " from " .. tostring(path) .. ": " .. tostring(module)
+        local msg = "failed to load agent module " .. tostring(global_name) .. " from " .. tostring(path) .. ": " .. tostring(module)
         core.log("warning", "[agent] " .. msg)
         local health = root and root.health
         if health and health.mark_failed then health.mark_failed("agent_runtime." .. tostring(global_name), msg) end
         module = {}
     end
     if module == nil then
-        local msg = "middleware module returned nil: " .. tostring(global_name) .. " from " .. tostring(path)
+        local msg = "agent module returned nil: " .. tostring(global_name) .. " from " .. tostring(path)
         core.log("warning", "[agent] " .. msg)
         local health = root and root.health
         if health and health.mark_failed then health.mark_failed("agent_runtime." .. tostring(global_name), msg) end
@@ -56,15 +56,18 @@ local function load_agent_module(global_name, filename)
 end
 
 local state_store    = load_agent_module("agent_state", "agent_state.lua")
-local capabilities   = load_agent_module("agent_capabilities", "agent_capabilities.lua")
-local context_cache  = load_agent_module("agent_context_cache", "agent_context_cache.lua")
-local result_utils   = load_agent_module("agent_result", "agent_result.lua")
-local retry_policy   = load_agent_module("agent_retry", "agent_retry.lua")
-local middleware     = load_agent_module("agent_middleware", "agent_middleware.lua")
-local prompt_builder = load_agent_module("agent_prompt_builder", "agent_prompt_builder.lua")
+local communication  = load_agent_module("agent_communication", "agent_communication.lua")
+local agent_context  = load_agent_module("agent_context", "agent_context.lua")
+local agent_flow     = load_agent_module("agent_flow", "agent_flow.lua")
+local capabilities   = agent_context.capabilities or {}
+local context_cache  = agent_context.context_cache or {}
+local prompt_builder = agent_context.prompt_builder or {}
+local result_utils   = agent_flow.result or {}
+local retry_policy   = agent_flow.retry or {}
+local flow_policy    = agent_flow.flow or agent_flow.middleware or {}
 
 -- Degraded-mode defaults. These keep agent_runtime loadable even when one
--- middleware helper is absent; the agent will then fail gracefully at runtime
+-- flow helper is absent; the agent will then fail gracefully at runtime
 -- instead of crashing during mod bootstrap.
 local fallback_states = {}
 if type(state_store.get) ~= "function" then
@@ -97,7 +100,7 @@ result_utils.action_history_entry = result_utils.action_history_entry or functio
 result_utils.format_results = result_utils.format_results or function(result) return tostring(result and (result.message or result.visible_text) or "") end
 retry_policy.failure_signature = retry_policy.failure_signature or function(result) return tostring(result and (result.error or result.message) or "unknown") end
 retry_policy.should_retry_failed_actions = retry_policy.should_retry_failed_actions or function() return false end
-middleware.decide_after_step = middleware.decide_after_step or function() return { continue = false, reason = "agent middleware unavailable" } end
+flow_policy.decide_after_step = flow_policy.decide_after_step or function() return { continue = false, reason = "agent flow unavailable" } end
 prompt_builder.build_messages = prompt_builder.build_messages or function(player_name, user_message, state) return { { role = "system", content = build_system_prompt and build_system_prompt(player_name, state and state.options or {}) or "LLM Connect agent degraded" }, { role = "user", content = tostring(user_message or "") } } end
 
 local function get_state(name)
@@ -105,8 +108,7 @@ local function get_state(name)
 end
 
 local function get_api()
-    local root = rawget(_G, "llm_connect")
-    local api = type(root) == "table" and root.api or nil
+    local api = communication.get_api and communication.get_api() or nil
     if not api then
         return {
             request = function(_, callback)
@@ -153,11 +155,13 @@ local function live_lua(player_name, code)
 end
 
 local function get_skills()
+    if communication.get_skills then return communication.get_skills() end
     local root = get_root()
     return type(root) == "table" and (root.skills or root.skills_subsystem or root.registry) or rawget(_G, "registry")
 end
 
 local function get_context()
+    if communication.get_basic_context then return communication.get_basic_context() end
     local root = get_root()
     return type(root) == "table" and (root.context_modules or root.context or root.basic_context) or rawget(_G, "basic_context")
 end
@@ -502,10 +506,10 @@ local function run_iteration(player_name, user_message, state, callbacks)
             callbacks.on_step(state.iteration, visible ~= "" and visible or "action", action_results)
         end
 
-        local decision = middleware.decide_after_step(state, action_results, {
+        local decision = flow_policy.decide_after_step(state, action_results, {
             retry = retry_policy,
         })
-        live_emit("middleware", player_name, "decision", decision)
+        live_emit("flow", player_name, "decision", decision)
         local continue = decision.continue == true
 
         -- Visible text that accompanies lua_action is step/status text. Keep it

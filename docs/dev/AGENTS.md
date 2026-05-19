@@ -101,7 +101,7 @@ At inspection time:
 Important current log findings:
 
 - Startup succeeds after an earlier syntax failure at `init.lua:381`.
-- `live_trace` loads and `llm_trace` chat command is registered.
+- `agent_debug.live_trace` loads and `llm_trace` chat command is registered.
 - `worldedit_agent` registers, but runtime status can still show it unavailable
   if the WorldEdit Lua API is not present in the running world.
 - Config GUI currently emits a formspec error:
@@ -126,14 +126,16 @@ Main files and responsibilities:
 - `agent/parser_utils.lua`: extracts `lua_action` fences and blocks forbidden
   host-access patterns. It explicitly allows
   `llm_connect.context.load(...)` before scanning for raw `load`.
-- `agent/agent_prompt_builder.lua`: compact system prompt, active skill
-  summary, context API contract.
+- `agent/agent_communication.lua`: guarded access to external agent
+  subsystems such as skills, provider API, and basic context.
+- `agent/agent_context.lua`: compact system prompt, active skill summary,
+  retrieved context cache, context API contract.
 - `agent/agent_runtime.lua`: iterative dual-channel agent loop, action
-  execution, live trace emission, middleware decision handling.
-- `agent/agent_middleware.lua`: decides whether to continue after context
-  lookups, explicit continuation, or retry-worthy failures.
-- `agent/agent_retry.lua`: failure signatures and single repair retry logic.
-- `agent/live_trace.lua`: root-only in-game trace stream plus formspec buffer.
+  execution, live trace emission, flow decision handling.
+- `agent/agent_flow.lua`: result formatting, failure signatures, repair retry,
+  and continuation decisions.
+- `agent/agent_debug.lua`: raw prompt trace files plus root-only in-game trace
+  stream and formspec buffer.
 - `context/context_registry.lua`: exact context ids, aliases, search fallback,
   sandbox proxy for `llm_connect.context`.
 - `context/context_init.lua`: public `llm_connect.context.*` facade and
@@ -325,7 +327,7 @@ Implementation target:
 Files:
 
 - `skills/worldedit_agent/worldedit_agent.lua`
-- `agent/agent_prompt_builder.lua`
+- `agent/agent_context.lua`
 - `context/context_registry.lua`
 
 ### 5. Verify Context Continuation Behavior
@@ -339,7 +341,7 @@ Problem:
 
 Implementation target:
 
-- Use existing `agent/agent_context_cache.lua` and middleware hooks before
+- Use existing `agent/agent_context.lua` cache helpers and flow hooks before
   adding new loop logic.
 - Detect repeated identical context loads and stop or compress repeated cache
   entries.
@@ -347,8 +349,8 @@ Implementation target:
 
 Files:
 
-- `agent/agent_context_cache.lua`
-- `agent/agent_middleware.lua`
+- `agent/agent_context.lua`
+- `agent/agent_flow.lua`
 - `agent/agent_runtime.lua`
 
 ### 6. Keep Root Override Explicit

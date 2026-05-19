@@ -13,7 +13,7 @@ Runs the dual-channel agent loop: visible assistant text plus hidden
 - Actions finish with `{ done=true, message="..." }`.
 - Actions request another iteration with
   `{ done=false, continue=true, message="..." }`.
-- Failed actions may trigger repair retries through `agent_retry.lua`.
+- Failed actions may trigger repair retries through `agent_flow.lua`.
 
 ## Nicht-Ziele
 
@@ -24,12 +24,13 @@ Runs the dual-channel agent loop: visible assistant text plus hidden
 ## Datenfluss
 
 1. GUI/chat dispatch calls the agent runtime.
-2. `agent_prompt_builder.lua` builds system prompt, basic context, active skill
+2. `agent_communication.lua` reads external subsystem state for the agent.
+3. `agent_context.lua` builds system prompt, basic context, active skill
    summary, and cached retrieved context.
-3. `api/llm_api.lua` sends the request and records trace output when enabled.
-4. `parser_utils.lua` extracts `lua_action` blocks.
-5. `agent_runtime.lua` executes actions through `runtime/core_executor.lua`.
-6. Middleware decides stop, continue, context continuation, or repair retry.
+4. `api/llm_api.lua` sends the request and records trace output when enabled.
+5. `parser_utils.lua` extracts `lua_action` blocks.
+6. `agent_runtime.lua` executes actions through `runtime/core_executor.lua`.
+7. `agent_flow.lua` decides stop, continue, context continuation, or repair retry.
 
 ## Settings
 

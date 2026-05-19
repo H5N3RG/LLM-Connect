@@ -91,12 +91,12 @@ Expected trace/log evidence:
 
 What failure means:
 
-- `agent/live_trace.lua` did not load, root privilege detection is wrong, or
+- `agent/agent_debug.lua` did not load, root privilege detection is wrong, or
   formspec field handling is broken.
 
 Related subsystem/files:
 
-- `agent/live_trace.lua`
+- `agent/agent_debug.lua`
 - `api/llm_api.lua`
 - `agent/agent_runtime.lua`
 - `runtime/core_executor.lua`
@@ -202,7 +202,7 @@ What failure means:
 
 Related subsystem/files:
 
-- `agent/agent_prompt_builder.lua`
+- `agent/agent_context.lua`
 - `agent/agent_runtime.lua`
 - `skills/registry.lua`
 - `runtime/core_executor.lua`
@@ -245,7 +245,7 @@ What failure means:
 
 Related subsystem/files:
 
-- `agent/agent_prompt_builder.lua`
+- `agent/agent_context.lua`
 - `agent/agent_runtime.lua`
 - `context/context_registry.lua`
 - `skills/worldedit_agent/worldedit_agent.lua`
@@ -274,16 +274,15 @@ Expected trace/log evidence:
 
 What failure means:
 
-- The prompt contract is unclear about context return shapes, or middleware is
+- The prompt contract is unclear about context return shapes, or flow logic is
   not stopping repeated context-only turns.
 
 Related subsystem/files:
 
 - `context/context_registry.lua`
 - `context/context_init.lua`
-- `agent/agent_prompt_builder.lua`
-- `agent/agent_context_cache.lua`
-- `agent/agent_middleware.lua`
+- `agent/agent_context.lua`
+- `agent/agent_flow.lua`
 
 ## 9. Prompt File Trace
 
@@ -451,4 +450,4 @@ Related subsystem/files:
 - `skills/command_agent/command_agent.lua`
 - `context/basic_context.lua`
 - `context/context_registry.lua`
-- `agent/agent_prompt_builder.lua`
+- `agent/agent_context.lua`

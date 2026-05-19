@@ -30,7 +30,7 @@ manual into every prompt.
 2. `context_init.lua` exposes normalized public functions.
 3. Agent action calls `llm_connect.context.load(...)`.
 4. Successful context loads are remembered per player.
-5. `agent_context_cache.lua` injects retrieved context into the next prompt.
+5. `agent_context.lua` injects retrieved context into the next prompt.
 
 ## Settings
 
@@ -43,7 +43,7 @@ settings.
   `context_init.lua` and sandbox `_G.player_name` handling.
 - Model reads `doc.commands`: prompt/context contract is stale.
 - Context lookup succeeds but next iteration lacks docs: check
-  `remember_recent_context()` and `agent_context_cache.lua`.
+  `remember_recent_context()` and `agent_context.lua`.
 
 ## Tests / Smoke Checks
 

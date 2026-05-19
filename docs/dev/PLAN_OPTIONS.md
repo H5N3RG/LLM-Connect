@@ -107,7 +107,7 @@ Recommended default:
 
 Problem:
 
-- `agent/live_trace.lua` has an in-game trace formspec and chat stream.
+- `agent/agent_debug.lua` has an in-game trace formspec and chat stream.
 - `gui/config_gui.lua` also has live trace controls.
 
 Option A: Keep trace panel minimal

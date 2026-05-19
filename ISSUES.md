@@ -1,7 +1,7 @@
 
 ## 1. AGENT_LOOP KONTEXT PROBLEME
 - bei anfragen an den agenten keine beschaffung von kontext wegen berechtigungsproblem möglich trotz aktivem command_agent und llm_root
-- lokalisierbar vermutlich unter ./agent/agent_retry.lua & ./agent/agent_capabilities.lua
+- lokalisierbar vermutlich unter ./agent/agent_flow.lua & ./agent/agent_context.lua
 - wenn nicht dort, global die das berechtigungssystem ausgehend von ./agent/agent_init.lua verfolgen
 - wenn nicht identifizierbar, konkrete testfälle vom dev anfordern und ~/codex/*.txt einlesen (tracelog) (tracelogs)
 

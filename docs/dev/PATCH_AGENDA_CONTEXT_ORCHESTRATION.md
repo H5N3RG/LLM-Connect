@@ -153,10 +153,10 @@ return llm_connect.skills.worldedit_agent.run('build_house', {
 
 ```text
 context/context_registry.lua
-agent/agent_prompt_builder.lua
+agent/agent_context.lua
 agent/agent_runtime.lua
-agent/agent_middleware.lua
-agent/agent_context_cache.lua
+agent/agent_flow.lua
+agent/agent_context.lua
 skills/worldedit_agent/worldedit_agent.lua
 ```
 

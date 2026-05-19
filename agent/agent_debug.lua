@@ -1,25 +1,113 @@
 -- ===========================================================================
---  live_trace.lua — root-only in-game live trace stream for LLM Connect
---  author: H5N3RG
---  license: LGPL-3.0-or-later
---
---  Emits compact trace lines directly into the Luanti chat log while enabled.
---  This complements raw prompt_trace files and is designed for live debugging
---  of prompt construction, provider calls, executor prechecks, runtime errors,
---  skill dispatch, and retry loops.
+--  agent_debug.lua — raw prompt tracing and root-only live trace stream
 -- ===========================================================================
 
 local core = core
 local M = {}
 
-M.version = "1.2.0-dev"
-M.max_line_len = 220
-M.max_buffer = 300
-M.categories = {
+-- ---------------------------------------------------------------------------
+-- Raw prompt/response file trace
+-- ---------------------------------------------------------------------------
+
+local prompt_trace = {}
+
+prompt_trace.user_log_name = "llm_user_prompt_log.txt"
+prompt_trace.response_log_name = "llm_response_prompt_log.txt"
+
+local function prompt_trace_enabled()
+    return core.settings:get_bool("llm_trace_prompt_log", false)
+end
+
+local function ts()
+    if os and os.date then return os.date("!%Y-%m-%dT%H:%M:%SZ") end
+    return tostring(core.get_gametime and core.get_gametime() or "unknown-time")
+end
+
+local function world_file(name)
+    return core.get_worldpath() .. "/" .. name
+end
+
+local function stringify(value)
+    if type(value) == "string" then return value end
+    local ok, json = pcall(core.write_json, value, true)
+    if ok and json then return json end
+    return tostring(value)
+end
+
+local function append_file(path, text)
+    if not io or not io.open then return false, "io.open unavailable" end
+    local f, err = io.open(path, "a")
+    if not f then return false, err end
+    f:write(text)
+    f:close()
+    return true
+end
+
+local function write_prompt_trace(kind, filename, meta, payload)
+    if not prompt_trace_enabled() then return true end
+    local lines = {
+        "\n==================== LLM CONNECT TRACE ====================\n",
+        "time_utc: ", ts(), "\n",
+        "kind: ", tostring(kind), "\n",
+    }
+    for k, v in pairs(meta or {}) do
+        lines[#lines + 1] = tostring(k)
+        lines[#lines + 1] = ": "
+        lines[#lines + 1] = tostring(v)
+        lines[#lines + 1] = "\n"
+    end
+    lines[#lines + 1] = "-------------------- PAYLOAD BEGIN --------------------\n"
+    lines[#lines + 1] = stringify(payload)
+    lines[#lines + 1] = "\n--------------------- PAYLOAD END ---------------------\n"
+
+    local ok, err = append_file(world_file(filename), table.concat(lines))
+    if not ok then
+        core.log("warning", "[prompt_trace] failed to write " .. tostring(filename) .. ": " .. tostring(err))
+    end
+    return ok, err
+end
+
+function prompt_trace.enabled()
+    return prompt_trace_enabled()
+end
+
+function prompt_trace.log_request(meta, body_table, body_raw)
+    if not prompt_trace_enabled() then return true end
+    return write_prompt_trace("request", prompt_trace.user_log_name, meta, {
+        body_table = body_table,
+        raw_json = body_raw,
+        note = "Authorization header is intentionally not logged; request body and prompt messages are complete.",
+    })
+end
+
+function prompt_trace.log_response(meta, result, parsed)
+    if not prompt_trace_enabled() then return true end
+    return write_prompt_trace("response", prompt_trace.response_log_name, meta, {
+        fetch_result = result,
+        parsed_json = parsed,
+    })
+end
+
+function prompt_trace.log_error_response(meta, err)
+    if not prompt_trace_enabled() then return true end
+    return write_prompt_trace("response_error", prompt_trace.response_log_name, meta, err)
+end
+
+-- ---------------------------------------------------------------------------
+-- Root-only in-game live trace stream
+-- ---------------------------------------------------------------------------
+
+local live_trace = {}
+
+live_trace.version = "1.2.0-dev"
+live_trace.max_line_len = 220
+live_trace.max_buffer = 300
+live_trace.categories = {
     prompt = true,
     request = true,
     response = true,
     parser = true,
+    flow = true,
     middleware = true,
     executor = true,
     runtime = true,
@@ -29,26 +117,26 @@ M.categories = {
     lua = true,
     trace = true,
 }
-M.buffer = M.buffer or {}
+live_trace.buffer = live_trace.buffer or {}
 
 local function setting_bool(key, default)
     return core.settings:get_bool(key, default == true)
 end
 
-function M.enabled()
+function live_trace.enabled()
     return setting_bool("llm_live_trace_chat", false)
 end
 
-function M.raw_lua_enabled()
+function live_trace.raw_lua_enabled()
     return setting_bool("llm_live_trace_show_lua", false)
 end
 
-function M.verbosity()
+function live_trace.verbosity()
     return tostring(core.settings:get("llm_live_trace_verbosity") or "normal")
 end
 
 local function verbosity_allows(category)
-    local v = M.verbosity()
+    local v = live_trace.verbosity()
     if v == "verbose" then return true end
     if v == "quiet" then
         return category == "runtime"
@@ -61,20 +149,20 @@ local function verbosity_allows(category)
 end
 
 local function line_limit()
-    local v = M.verbosity()
+    local v = live_trace.verbosity()
     if v == "quiet" then return 140 end
     if v == "verbose" then return 600 end
-    return M.max_line_len
+    return live_trace.max_line_len
 end
 
 local function category_enabled(category)
     category = tostring(category or "trace"):lower()
-    if not M.categories[category] then return false end
+    if not live_trace.categories[category] then return false end
     local raw = core.settings:get("llm_live_trace_categories") or ""
     if raw == "" or raw == "*" or raw == "all" then return true end
     for item in raw:gmatch("[^,%s]+") do
-        item = item:lower()
-        if item == "all" or item == "*" or item == category then return true end
+        local selected = item:lower()
+        if selected == "all" or selected == "*" or selected == category then return true end
     end
     return false
 end
@@ -94,7 +182,7 @@ local function compact(text, max_len)
     text = tostring(text or "")
     text = text:gsub("\r\n", "\n"):gsub("\r", "\n")
     text = text:gsub("\n+", " ⏎ "):gsub("%s+", " ")
-    max_len = max_len or M.max_line_len
+    max_len = max_len or live_trace.max_line_len
     if #text > max_len then return text:sub(1, max_len - 3) .. "..." end
     return text
 end
@@ -104,9 +192,9 @@ local function timestamp()
 end
 
 local function push_buffer(entry)
-    M.buffer[#M.buffer + 1] = entry
-    while #M.buffer > M.max_buffer do
-        table.remove(M.buffer, 1)
+    live_trace.buffer[#live_trace.buffer + 1] = entry
+    while #live_trace.buffer > live_trace.max_buffer do
+        table.remove(live_trace.buffer, 1)
     end
 end
 
@@ -133,8 +221,8 @@ local function recipients(preferred)
     return out
 end
 
-function M.emit(category, player_name, message, data)
-    if not M.enabled() then return false end
+function live_trace.emit(category, player_name, message, data)
+    if not live_trace.enabled() then return false end
     category = tostring(category or "trace"):lower()
     if not category_enabled(category) then return false end
     if not verbosity_allows(category) then return false end
@@ -162,25 +250,25 @@ function M.emit(category, player_name, message, data)
     return true
 end
 
-function M.emit_lua(player_name, code)
-    if not M.enabled() or not M.raw_lua_enabled() then return false end
-    return M.emit("lua", player_name, code)
+function live_trace.emit_lua(player_name, code)
+    if not live_trace.enabled() or not live_trace.raw_lua_enabled() then return false end
+    return live_trace.emit("lua", player_name, code)
 end
 
-function M.clear()
-    M.buffer = {}
+function live_trace.clear()
+    live_trace.buffer = {}
     return true
 end
 
-function M.get_entries()
+function live_trace.get_entries()
     local out = {}
-    for i, entry in ipairs(M.buffer or {}) do out[i] = entry end
+    for i, entry in ipairs(live_trace.buffer or {}) do out[i] = entry end
     return out
 end
 
-function M.format_buffer()
+function live_trace.format_buffer()
     local lines = {}
-    for _, e in ipairs(M.buffer or {}) do
+    for _, e in ipairs(live_trace.buffer or {}) do
         local line = string.format("%s [%s] %s", tostring(e.time), tostring(e.category):upper(), tostring(e.message))
         if e.data and e.data ~= "" then line = line .. " | " .. e.data end
         lines[#lines + 1] = line
@@ -189,7 +277,7 @@ function M.format_buffer()
     return table.concat(lines, "\n")
 end
 
-function M.show_formspec(player_name)
+function live_trace.show_formspec(player_name)
     if not has_root(player_name) then return false end
     local fs = {
         "formspec_version[6]",
@@ -199,7 +287,7 @@ function M.show_formspec(player_name)
         "label[0.35,0.35;LLM Connect Live Trace]",
         "button[12.1,0.2;1.6,0.55;llm_trace_refresh;Refresh]",
         "button[13.9,0.2;1.6,0.55;llm_trace_clear;Clear]",
-        "textarea[0.35,0.95;15.3,10.55;llm_trace_buffer;;" .. core.formspec_escape(M.format_buffer()) .. "]",
+        "textarea[0.35,0.95;15.3,10.55;llm_trace_buffer;;" .. core.formspec_escape(live_trace.format_buffer()) .. "]",
         "button_exit[6.8,11.45;2.4,0.45;llm_trace_close;Close]",
     }
     core.show_formspec(player_name, "llm_connect:live_trace", table.concat(fs))
@@ -211,16 +299,19 @@ core.register_on_player_receive_fields(function(player, formname, fields)
     local name = player:get_player_name()
     if not has_root(name) then return true end
     if fields.llm_trace_clear then
-        M.clear()
-        M.show_formspec(name)
+        live_trace.clear()
+        live_trace.show_formspec(name)
         return true
     elseif fields.llm_trace_refresh then
-        M.show_formspec(name)
+        live_trace.show_formspec(name)
         return true
     end
     return true
 end)
 
-core.log("action", "[live_trace] module loaded — in-game root trace stream available")
+M.prompt_trace = prompt_trace
+M.live_trace = live_trace
+
+core.log("action", "[agent_debug] loaded — prompt trace and live trace ready")
 
 return M
