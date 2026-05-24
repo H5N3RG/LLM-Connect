@@ -15,9 +15,9 @@ and controlled root overrides.
   `loadstring`, `debug`, and `package`.
 - Runtime registrations are blocked: node/tool/craftitem/entity/craft
   registration is load-time only.
-- `core.set_time` is not part of the safe runtime API; use
-  `llm_connect.skills.command_agent.set_time({time=...}, player_name)` when
-  `command_agent` is active.
+- Runtime should not document skill-specific substitutes for unavailable
+  `core.*` helpers. Use attached skills only through their documented
+  `llm_connect.skills.<skill_id>.run("<tool_name>", args, player_name)` contract.
 - Skills may call `llm_connect.runtime.execute(..., {purpose="skill"})` as a
   controlled primitive. Runtime policy, precheck, and sandboxing remain the
   authority.

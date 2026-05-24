@@ -341,19 +341,58 @@ local function returns_done_true_code(code)
     return code:find("return%s*{%s*done%s*=%s*true") ~= nil
 end
 
+local function requests_continuation_code(code)
+    code = tostring(code or "")
+    return code:find("return%s*{%s*done%s*=%s*false") ~= nil
+        or code:find("continue%s*=%s*true") ~= nil
+end
+
 local function checks_skill_result_code(code)
     code = tostring(code or "")
     if code:find("ok%s*==%s*false") then return true end
     if code:find("success%s*==%s*false") then return true end
     if code:find("not%s+[%w_]+%.ok") then return true end
+    if code:find("not%s+[%w_]+%.success") then return true end
+    if code:find("not%s*%(%s*[%w_]+%s+and%s+[%w_]+%.ok%s*%)") then return true end
+    if code:find("not%s*%(%s*[%w_]+%s+and%s+[%w_]+%.success%s*%)") then return true end
     if code:find("return%s+llm_connect%s*%.%s*skills%s*%.") then return true end
     return false
+end
+
+local function invalid_skill_invocation_error(code)
+    code = tostring(code or "")
+    local skill_id, tool_name = code:match("llm_connect%s*%.%s*skills%s*%.%s*([%w_]+)%s*%.%s*([%w_]+)%s*:%s*run%s*%(")
+    if skill_id and tool_name then
+        return "Invalid skill invocation: llm_connect.skills." .. skill_id .. "." .. tool_name
+            .. ":run(...). Use the canonical skill protocol: llm_connect.skills."
+            .. skill_id .. ".run(\"" .. tool_name .. "\", { ... }, player_name)"
+    end
+    skill_id, tool_name = code:match("llm_connect%s*%.%s*skills%s*%.%s*([%w_]+)%s*%.%s*([%w_]+)%s*%(")
+    if skill_id and tool_name and tool_name ~= "run" then
+        return "Invalid skill invocation: llm_connect.skills." .. skill_id .. "." .. tool_name
+            .. "(...). Use the canonical skill protocol: llm_connect.skills."
+            .. skill_id .. ".run(\"" .. tool_name .. "\", { ... }, player_name)"
+    end
+    return nil
 end
 
 local function ignored_skill_result_error(code)
     if uses_skill_call_code(code) and returns_done_true_code(code) and not checks_skill_result_code(code) then
         return "lua_action reports done=true after a skill call without checking the skill result"
     end
+    return nil
+end
+
+local function context_action_signature(code)
+    code = tostring(code or "")
+    local method, key = code:match("llm_connect%s*%.%s*context%s*%.%s*(load)%s*%(%s*[\"'](.-)[\"']")
+    if not method then method, key = code:match("llm_connect%s*%.%s*context%s*%.%s*(lookup)%s*%(%s*[\"'](.-)[\"']") end
+    if not method then method, key = code:match("llm_connect%s*%.%s*context%s*%.%s*(get_section)%s*%(%s*[\"'](.-)[\"']") end
+    if not method then method, key = code:match("llm_connect%s*%.%s*context%s*%.%s*(has)%s*%(%s*[\"'](.-)[\"']") end
+    if not method then method, key = code:match("llm_connect%s*%.%s*context%s*%.%s*(search)%s*%(%s*[\"'](.-)[\"']") end
+    if method and key then return method .. ":" .. key end
+    if code:find("llm_connect%s*%.%s*context%s*%.%s*list_sections%s*%(") then return "list_sections" end
+    if code:find("llm_connect%s*%.%s*context%s*%.%s*keys%s*%(") then return "keys" end
     return nil
 end
 
@@ -427,7 +466,7 @@ local function should_retry_failed_actions(state, action_results)
     return retry_policy.should_retry_failed_actions(state, action_results)
 end
 
-local function execute_actions(player_name, actions)
+local function execute_actions(player_name, actions, state)
     local runtime = get_runtime()
     local results = {}
     if not runtime or not runtime.execute then
@@ -438,7 +477,33 @@ local function execute_actions(player_name, actions)
         local code = action.code or ""
         live_emit("executor", player_name, "execute lua_action #" .. tostring(i), { bytes = #code })
         live_lua(player_name, code)
-        local pre_error = ignored_skill_result_error(code)
+        local duplicate_context = false
+        local context_sig = is_context_action_code(code) and context_action_signature(code) or nil
+        if context_sig and state then
+            state.context_action_signatures = state.context_action_signatures or {}
+            if state.context_action_signatures[context_sig] then
+                duplicate_context = true
+                local continue_after_duplicate = requests_continuation_code(code) and not returns_done_true_code(code)
+                local result = {
+                    ok = true,
+                    success = true,
+                    tool = "lua_action",
+                    index = i,
+                    action_code = code,
+                    is_context_action = true,
+                    return_value = {
+                        done = not continue_after_duplicate,
+                        continue = continue_after_duplicate,
+                        message = "Context already requested this run: " .. context_sig .. ". Use the cached context already present in the prompt and continue with the remaining user request.",
+                    },
+                }
+                result.message = action_result_message(result)
+                live_emit("executor", player_name, result.message, { tool = result.tool })
+                results[#results + 1] = result
+            end
+        end
+
+        local pre_error = (not duplicate_context) and (invalid_skill_invocation_error(code) or ignored_skill_result_error(code)) or nil
         if pre_error then
             local result = {
                 ok = false,
@@ -448,11 +513,14 @@ local function execute_actions(player_name, actions)
                 action_code = code,
                 is_context_action = false,
                 error = pre_error,
-                message = pre_error .. ". Store the skill return value and handle res.ok == false before returning done=true.",
+                message = pre_error,
             }
+            if pre_error:find("Invalid skill invocation", 1, true) == nil then
+                result.message = pre_error .. ". Store the skill return value and handle res.ok == false before returning done=true."
+            end
             live_emit("error", player_name, result.message, { tool = result.tool })
             results[#results + 1] = result
-        else
+        elseif not duplicate_context then
             local result = runtime.execute({
                 actor = player_name,
                 origin = "agent.runtime",
@@ -488,6 +556,10 @@ local function execute_actions(player_name, actions)
                 if registry and type(registry.consume_recent_context) == "function" then
                     result.retrieved_context = registry.consume_recent_context(player_name)
                 end
+                if context_sig and state and (result.success or result.ok) then
+                    state.context_action_signatures = state.context_action_signatures or {}
+                    state.context_action_signatures[context_sig] = true
+                end
             end
             mark_context_continuation(result)
             result.message = action_result_message(result)
@@ -500,6 +572,44 @@ local function execute_actions(player_name, actions)
         end
     end
     return results
+end
+
+local function last_action_result(state)
+    local results = state and state.action_results or {}
+    return results[#results]
+end
+
+local function build_final_result(state, extra)
+    extra = extra or {}
+    local last = last_action_result(state)
+    local success = true
+    local err = nil
+    local pending = false
+    if last and not (last.success or last.ok) then
+        success = false
+        err = last.error or last.message or "last action failed"
+    end
+    if last and type(last.return_value) == "table" and last.return_value.permission_required == true then
+        success = false
+        pending = true
+        err = last.return_value.message or "permission required"
+    end
+    if extra.stopped == "max_iterations" and last and not (last.success or last.ok) then
+        success = false
+        err = err or "agent iteration limit reached after action failure"
+    end
+    return {
+        success = success,
+        ok = success,
+        pending = pending,
+        error = err,
+        visible_text = table.concat(state.visible_parts, "\n\n"),
+        action_results = state.action_results,
+        actions = extra.actions,
+        iterations = state.iteration,
+        raw = extra.raw,
+        stopped = extra.stopped,
+    }
 end
 
 local function finish(state, callbacks, result)
@@ -515,13 +625,7 @@ end
 local function run_iteration(player_name, user_message, state, callbacks)
     if state.cancelled then return fail(state, callbacks, "cancelled") end
     if state.iteration >= state.max_iterations then
-        return finish(state, callbacks, {
-            success = true,
-            ok = true,
-            visible_text = table.concat(state.visible_parts, "\n\n"),
-            action_results = state.action_results,
-            stopped = "max_iterations",
-        })
+        return finish(state, callbacks, build_final_result(state, { stopped = "max_iterations" }))
     end
 
     state.iteration = state.iteration + 1
@@ -560,7 +664,7 @@ local function run_iteration(player_name, user_message, state, callbacks)
         local action_results = {}
 
         if #actions > 0 then
-            action_results = execute_actions(player_name, actions)
+            action_results = execute_actions(player_name, actions, state)
             for _, r in ipairs(action_results) do
                 context_cache.observe_result(state, r)
                 state_store.append_action_result(state, r)
@@ -590,15 +694,10 @@ local function run_iteration(player_name, user_message, state, callbacks)
             return run_iteration(player_name, user_message, state, callbacks)
         end
 
-        return finish(state, callbacks, {
-            success = true,
-            ok = true,
-            visible_text = table.concat(state.visible_parts, "\n\n"),
+        return finish(state, callbacks, build_final_result(state, {
             actions = actions,
-            action_results = state.action_results,
-            iterations = state.iteration,
             raw = response.content,
-        })
+        }))
     end, { timeout = cfg_timeout(), mode = "agent", actor = player_name })
 end
 

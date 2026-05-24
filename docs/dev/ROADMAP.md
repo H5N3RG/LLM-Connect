@@ -15,8 +15,9 @@ Must have:
 - Agent loop can load focused context, continue once, and use cached context in
   the next prompt.
 - `player_name` is available in sandboxed and root-unrestricted agent actions.
-- `command_agent` exposes stable Lua-first helpers for common command tasks,
-  especially `set_time({time=...}, player_name)`.
+- `command_agent` exposes stable Lua-first helpers through
+  `run("<tool>", args, player_name)`, especially
+  `run("set_time", {time=...}, player_name)`.
 - `worldedit_agent` exposes a documented `run(tool, args, player_name)` API and
   rejects unknown nodes before WorldEdit calls.
 - Config GUI Agent tab buttons, save/reload/test/close, and retry settings work.

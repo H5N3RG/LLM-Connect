@@ -194,7 +194,8 @@ function M.describe_for_agent(player_name, filter)
     local skills = M.list_skills(player_name, filter)
     if #skills == 0 then return "" end
     local lines = {
-        "Active Lua-first skills are available through llm_connect.skills.<skill_id>.",
+        "Active Lua-first skills are invoked only through llm_connect.skills.<skill_id>.run(\"<tool_name>\", args, player_name).",
+        "Do not call tool helpers directly as functions or with :run(). The .run(\"tool\", args, player_name) form is the only agent-facing protocol.",
         "In visible chat, use each skill's display name. Treat skill_id values as code namespaces only.",
         "Detailed manuals are intentionally not injected. Use llm_connect.context.load(context_section) before complex skill calls.",
         "Context loads return documentation in the content field, not parsed API tables.",
@@ -203,10 +204,11 @@ function M.describe_for_agent(player_name, filter)
         local display = skill.label or skill.display_name or skill.name or skill.id
         lines[#lines + 1] = string.format("- %s v%s: %s", tostring(display), tostring(skill.version or "?"), tostring(skill.description or ""))
         lines[#lines + 1] = "  Code namespace: llm_connect.skills." .. tostring(skill.id)
+        lines[#lines + 1] = "  Invocation: llm_connect.skills." .. tostring(skill.id) .. ".run(\"<tool_name>\", args, player_name)"
         local ctx_id = skill.context_section or ("skills." .. tostring(skill.id))
         lines[#lines + 1] = "  Context section: " .. ctx_id
         if type(skill.context_aliases) == "table" and #skill.context_aliases > 0 then
-            lines[#lines + 1] = "  Context aliases: " .. table.concat(skill.context_aliases, ", ")
+            lines[#lines + 1] = "  Context aliases: " .. table.concat(skill.context_aliases, ", ") .. " (also accepted as skills.<alias>)"
         end
     end
     return table.concat(lines, "\n")

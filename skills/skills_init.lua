@@ -162,12 +162,25 @@ function M.get_contexts(player_name, filter)
     return registry_call("get_contexts", {}, player_name, filter)
 end
 
-local function copy_skill_api(api)
+local function copy_skill_api(api, skill)
     local out = {}
-    for k, v in pairs(api or {}) do
-        -- Only expose callable per-skill runtime functions. The registry/admin
-        -- facade remains outside sandboxed agent code.
-        if type(v) == "function" then out[k] = v end
+    if type(api) ~= "table" then return out end
+
+    -- The stable agent-facing ABI is intentionally narrow:
+    -- llm_connect.skills.<skill_id>.run(tool_name, args, player_name).
+    -- Internal helper functions may exist on the skill table for compatibility
+    -- or direct Lua use, but sandboxed agent code should not see them unless a
+    -- skill explicitly opts them into agent_api/public_api.
+    if type(api.run) == "function" then out.run = api.run end
+
+    local allowed = skill and (skill.agent_api or skill.public_api)
+    if type(allowed) == "table" then
+        for _, name in ipairs(allowed) do
+            name = tostring(name or "")
+            if name ~= "run" and type(api[name]) == "function" then
+                out[name] = api[name]
+            end
+        end
     end
     return out
 end
@@ -179,7 +192,7 @@ function M.make_sandbox_proxy(player_name, filter)
         local id = skill and skill.id
         local api = id and M[id] or nil
         if type(id) == "string" and type(api) == "table" then
-            proxy[id] = copy_skill_api(api)
+            proxy[id] = copy_skill_api(api, skill)
         end
     end
     return proxy

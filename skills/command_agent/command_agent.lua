@@ -235,11 +235,11 @@ local function get_context(player_name)
     local pos = player:get_pos()
     return table.concat({
         "Runtime Agent skill is active (registered as command_agent for compatibility).",
-        "Use it for controlled runtime Lua actions and small direct system operations.",
+        "Use it for small controlled system operations.",
         string.format("Player position: (%d,%d,%d)", math.floor(pos.x), math.floor(pos.y), math.floor(pos.z)),
-        "Preferred: execute_lua({code='return {done=true}'}, player_name) for runtime-safe Lua through core_executor policy.",
-        "Use run_chatcommand only when no direct function or runtime-safe Lua covers the task.",
-        "Time changes: use set_time({time=18000}, player_name). It uses native core.set_timeofday when available.",
+        "Canonical invocation: llm_connect.skills.command_agent.run(\"<tool>\", args, player_name).",
+        "Available tools: set_time, list_chatcommands, run_chatcommand.",
+        "Time changes: run(\"set_time\", {time=18000}, player_name). It uses native core.set_timeofday when available.",
     }, "\n")
 end
 
@@ -315,25 +315,28 @@ if root.context and type(root.context.register_section) == "function" then
             return table.concat({
                 get_context(player_name),
                 "",
-                "Callable functions:",
-                "  llm_connect.skills.command_agent.execute_lua({ code = 'return { done=true, message=\"ok\" }' }, player_name)",
-                "  llm_connect.skills.command_agent.precheck_lua({ code = 'return 1' }, player_name)",
-                "  llm_connect.skills.command_agent.set_time({ time = 18000 }, player_name)",
-                "  llm_connect.skills.command_agent.list_chatcommands({ only_allowed = true }, player_name)",
-                "  llm_connect.skills.command_agent.run_chatcommand({ command = '/time 6000' }, player_name)",
-                "  llm_connect.skills.command_agent.run('execute_lua', { code = 'print(player_name)' }, player_name)",
-                "  llm_connect.skills.command_agent.run('set_time', { time = 18000 }, player_name)",
-                "execute_lua routes through llm_connect.runtime/core_executor and respects execution policy, precheck, and sandbox settings.",
-                "For time changes, prefer set_time(); it is native when core.set_timeofday exists and falls back to /time only if needed.",
-                "Do not call execute(); it is only a fallback compatibility alias.",
-                "Use run_chatcommand only when no direct helper or runtime-safe Lua operation covers the task.",
-                "Always include player_name as second argument.",
+                "Canonical invocation:",
+                "  llm_connect.skills.command_agent.run(\"<tool>\", args, player_name)",
+                "",
+                "Tools:",
+                "  \"set_time\": {time=0..24000}",
+                "  \"list_chatcommands\": {only_allowed=true}",
+                "  \"run_chatcommand\": {command=\"/...\"}",
+                "",
+                "Example:",
+                "  local res = llm_connect.skills.command_agent.run(\"set_time\", {time=18000}, player_name)",
+                "  if not (res and res.ok) then return {done=false, continue=true, message=res and res.message or \"Skill failed\"} end",
+                "  return {done=true, message=res.message or \"Time set\"}",
+                "",
+                "Do not call tools directly as llm_connect.skills.command_agent.set_time(...) or command_agent.set_time:run(...).",
+                "Compatibility helpers may exist internally, but they are not the agent-facing contract.",
             }, "\n")
         end,
     })
     if type(root.context.register_aliases) == "function" then
         root.context.register_aliases({
             runtime_agent = "skills.command_agent",
+            runtime = "skills.command_agent",
             command_agent = "skills.command_agent",
             commands = "skills.command_agent",
         })
@@ -349,13 +352,13 @@ root.registry.register_skill({
     id = "command_agent",
     label = "Runtime Agent",
     version = "1.3.0-dev",
-    description = "Lua-first runtime primitive skill: controlled Lua execution, direct system helpers, and chatcommand fallback.",
+    description = "Lua-first runtime primitive skill: direct system helpers and chatcommand fallback.",
     required_priv = "llm_agent",
     default_enabled = false,
     context_section = "skills.command_agent",
-    context_aliases = {"runtime_agent", "command_agent", "commands"},
+    context_aliases = {"runtime_agent", "runtime", "command_agent", "commands"},
     get_context = get_context,
-    tool_count = 5,
+    tool_count = 3,
 })
 
 core.log("action", "[command_agent] loaded as Lua-first skill")

@@ -159,6 +159,10 @@ function M.resolve_id(key)
     if M.sections[key] then return key, nil, "section" end
     local alias = key:lower()
     if M.aliases[alias] then return M.aliases[alias], nil, "alias" end
+    local skill_alias = alias:match("^skills%.(.+)$")
+    if skill_alias and M.aliases[skill_alias] then
+        return M.aliases[skill_alias], nil, "skill_alias"
+    end
     return nil, "unknown context key or alias: " .. key
 end
 
@@ -332,18 +336,6 @@ end
 function M.make_sandbox_proxy(player_name)
     local function as_context_step(res)
         if type(res) == "table" then
-            local has_content = type(res.content) == "string" and res.content ~= ""
-            local has_hits = type(res.sections) == "table" and #res.sections > 0
-            -- Context loading is an intermediate step only when it actually
-            -- returns usable content/hits. Failed lookups and empty searches
-            -- should not burn agent iterations.
-            if res.ok ~= false and (has_content or has_hits) then
-                res.done = false
-                res.continue = true
-            else
-                res.done = true
-                res.continue = false
-            end
             if not res.message or res.message == "" then
                 res.message = "Context lookup completed"
             end
@@ -403,7 +395,8 @@ local function register_builtin_sections()
             "  local hits = llm_connect.context.search('<query>') -- fallback only; returns {ok,count,sections={...}}",
             "load()/lookup()/get_section() return {ok,id,title,summary,content,message}. Read docs from doc.content.",
             "Do not test doc.commands or doc.api after context.load(); those fields are not part of the context result.",
-            "Prefer load()/lookup() with exact ids or glossary aliases. Use search() only if no alias/id is known.",
+            "Prefer load()/lookup() with exact ids or glossary aliases. Skill aliases also resolve when prefixed as skills.<alias>.",
+            "Use search() only if no alias/id is known.",
             "Return the loaded context table directly, or return {done=false, continue=true, message='Loaded context: ...'} when the loaded docs are needed for a later action.",
             "If the whole user request is only to load/check/show documentation, return {done=true, message='Context loaded: ...'} after a successful load.",
             "Do not guess complex APIs, server state, node names, or skill arguments when a context section can be requested first.",
@@ -452,7 +445,7 @@ local function register_builtin_sections()
             "For node writes, use node tables: core.set_node(pos, {name='default:stone'}); do not pass a bare node-name string.",
             "Players/objects: core.get_player_by_name, get_connected_players, get_objects_inside_radius.",
             "Helpers: core.pos_to_string, string_to_pos, serialize, deserialize, after, sound_play, show_formspec.",
-            "Time changes are not exposed as core.set_time in the safe runtime. If command_agent is active, use llm_connect.skills.command_agent.set_time({time=18000}, player_name).",
+            "Unavailable helpers such as core.set_time are not part of the safe runtime. Use only attached skills documented in [ACTIVE SKILL CONTEXT], through llm_connect.skills.<skill_id>.run('<tool_name>', args, player_name).",
             "Runtime registrations are blocked: register_node/tool/craftitem/entity/craft.",
             "Host access is blocked: io, require, dofile, loadfile, load, loadstring, debug, package.",
         }, "\n"),

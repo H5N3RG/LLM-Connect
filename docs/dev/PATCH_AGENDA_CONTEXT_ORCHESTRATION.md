@@ -123,16 +123,20 @@ For building requests, models either guessed low-level WorldEdit calls or bypass
 
 ### Patch
 
-Added high-level tools to `worldedit_agent`:
+Added high-level tools to `worldedit_agent`; the stable agent-facing surface
+for this stabilization pass is intentionally narrower:
 
 ```lua
+preview_plan
+print_plan
+build_platform
 build_hut
 build_house
-build_tower
-build_platform
+get_node
 ```
 
-These are now the preferred calls for natural-language building tasks.
+WorldEdit bridge tools and larger/advanced builders remain compatibility or
+experimental paths until they are tested separately.
 
 Example:
 
@@ -174,7 +178,11 @@ skills/worldedit_agent/worldedit_agent.lua
    - Expected: `worldedit_agent.run('build_hut', {}, player_name)`.
 
 4. Ask: `bau was komplexeres, sei kreativ`
-   - Expected: high-level builder first (`build_house`, `build_tower`, or platform + tower), not raw context search loop.
+   - Expected: stable high-level builder first (`build_house` or platform plus `print_plan`), not raw context search loop.
 
 5. Force unknown context query.
    - Expected: no 32-iteration spiral; stop after empty lookup/search.
+
+6. Attach `command_agent`, leave Agent Mode OFF, and send normal chat.
+   - Expected: plain chat path, no agent loop. Agent Mode must be explicitly ON
+     before attached skills are exposed to `agent.run()`.

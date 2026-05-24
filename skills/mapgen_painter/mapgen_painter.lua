@@ -593,7 +593,7 @@ local function get_context(player_name)
     load_requests()
     local count = #state.requests
     return table.concat({
-        "Mapgen Painter skill is active.",
+        "Mapgen Painter skill is active (experimental).",
         "Use it for queued low-level terrain paint operations during map generation.",
         "Preferred call form: llm_connect.skills.mapgen_painter.run('preview', {operations={...}}, player_name), then run('queue', ...).",
         "Supported operation kinds: set_node, fill, replace_area, carve_cave, add_noise_layer.",
@@ -640,6 +640,8 @@ if root.context and type(root.context.register_section) == "function" then
             return table.concat({
                 get_context(player_name),
                 "",
+                "Experimental skill: preview carefully before queueing; full live-world behavioral testing is deferred.",
+                "",
                 "Examples:",
                 "  llm_connect.skills.mapgen_painter.run('preview', {operations={{kind='fill', from={x=0,y=0,z=0}, to={x=15,y=8,z=15}, node='default:stone'}}}, player_name)",
                 "  llm_connect.skills.mapgen_painter.run('queue', {label='stone block', operations={{kind='fill', from={x=0,y=0,z=0}, to={x=15,y=8,z=15}, node='default:stone'}}}, player_name)",
@@ -680,7 +682,7 @@ if root.registry and type(root.registry.register_skill) == "function" then
         id = SKILL_ID,
         label = "Mapgen Painter",
         version = "0.1.0-prototype",
-        description = "Queued low-level VoxelManip terrain painter for map generation experiments.",
+        description = "Experimental queued low-level VoxelManip terrain painter for map generation experiments.",
         required_priv = "llm_agent",
         default_enabled = false,
         available = function()

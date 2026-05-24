@@ -116,6 +116,9 @@ function result.format_results(run_result)
     local count = #(run_result.action_results or {})
     if count > 0 then
         local last = run_result.action_results[count]
+        if last and not (last.success or last.ok) then
+            return "✗ Action failed: " .. result.one_line(last.message or last.error or "failed", 160)
+        end
         return "✓ Action completed: " .. result.one_line(last and (last.message or last.output or "ok") or "ok", 120)
     end
     return "(no visible response)"

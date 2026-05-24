@@ -112,7 +112,8 @@ local function get_session(name)
             history         = {},   -- chat message history [{role, content, status_line?}]
             last_input      = "",   -- preserved across show() calls
             iter_preference = nil,  -- nil = use server default
-                        chat_scroll     = 0,    -- 0 = top, 1000 = bottom
+            agent_mode      = false, -- explicit opt-in for action-aware agent routing
+            chat_scroll     = 0,    -- 0 = top, 1000 = bottom
         }
     end
     return sessions[name]
@@ -373,8 +374,15 @@ function M.show(name)
         local addon_color = active_count > 0 and "#1a2a1a" or "#252525"
         table.insert(fs, "style[open_addons;bgcolor=" .. addon_color .. ";textcolor=#aaffaa]")
         table.insert(fs, "button[" .. bx .. ",0.95;3.6,0.65;open_addons;" .. addon_label .. "]")
-        table.insert(fs, "tooltip[open_addons;Manage Lua-first skills. Send uses action-aware mode only when at least one skill is active.]")
+        table.insert(fs, "tooltip[open_addons;Manage Lua-first skills. Skills can be attached without enabling Agent Mode.]")
         bx = bx + 3.6 + 0.15
+
+        local agent_label = session.agent_mode and "Agent ON" or "Agent OFF"
+        local agent_color = session.agent_mode and "#1a2a1a" or "#2a1a1a"
+        table.insert(fs, "style[agent_mode_toggle;bgcolor=" .. agent_color .. ";textcolor=#aaffaa]")
+        table.insert(fs, "button[" .. bx .. ",0.95;2.6,0.65;agent_mode_toggle;" .. agent_label .. "]")
+        table.insert(fs, "tooltip[agent_mode_toggle;Toggle action-aware Agent Mode. OFF sends normal chat even when skills are attached.]")
+        bx = bx + 2.6 + 0.15
 
         -- ── Iteration stepper (right-aligned in row 2) ───────
         -- Shows as: [◀] N iter [▶]   e.g.  ◀ 4 iter ▶
@@ -781,8 +789,8 @@ local function do_send(name, input, session)
     local agent    = get_agent()
     local skills   = get_skills()
 
-    -- v1.1.0-dev dual-channel: use agent only when at least one skill is active.
-    -- Otherwise the same Send button is plain chat. Loaded skills are OFF by default.
+    -- Dual-channel agent mode is explicit. Attached skills remain available
+    -- without turning every message into an agent run.
     local active_skill_count = 0
     if skills and skills.get_status then
         local status = skills.get_status(name)
@@ -791,7 +799,7 @@ local function do_send(name, input, session)
         end
     end
     local use_agent = core.settings:get_bool("llm_agent_enabled", true) ~= false
-        and can_agent(name) and agent ~= nil and active_skill_count > 0
+        and session.agent_mode == true and can_agent(name) and agent ~= nil and active_skill_count > 0
 
     if use_agent then
         table.insert(session.history, { role = "user", content = input, mode = "agent" })
@@ -969,6 +977,11 @@ function M.handle_fields(name, formname, fields)
         if can_agent(name) then
             M.show_skills(name)
         end
+        return true
+
+    elseif fields.agent_mode_toggle and can_agent(name) then
+        session.agent_mode = not session.agent_mode
+        M.show(name)
         return true
 
     elseif fields.agent_cancel and can_agent(name) then

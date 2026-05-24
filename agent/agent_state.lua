@@ -17,6 +17,7 @@ local function default_state()
         action_results = {},
         tool_history = {},
         context_cache = {},
+        context_action_signatures = {},
         failure_retries = 0,
         last_failure_signature = nil,
         capability_snapshot = nil,

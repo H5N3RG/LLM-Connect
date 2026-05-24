@@ -4,7 +4,7 @@
 
 Registers Lua-first capabilities that the agent can use when explicitly
 attached to a player. The engine discovers skills structurally; each skill owns
-its own id, label, aliases, context manual, and public API.
+its own id, label, aliases, context manual, and runtime implementation.
 
 ## Public Contract
 
@@ -12,11 +12,19 @@ its own id, label, aliases, context manual, and public API.
   `llm_connect.skills.<skill_id>`.
 - Sandboxed agent code receives a restricted skill proxy, not the registry or
   the full skills facade.
+- The default agent-facing ABI is exactly:
+  `llm_connect.skills.<skill_id>.run("<tool_name>", args, player_name)`.
+- Internal helper functions may exist on a skill table, but they are not exposed
+  to sandboxed agent code unless the skill explicitly opts them into
+  `agent_api`/`public_api`.
 - Skills are globally registered but per-player effective availability depends
   on privileges and attachment state.
 - Skill return tables should use:
   `{ ok=boolean, success=boolean, message=string, data=table }`.
 - Skill manuals are exposed as context sections registered by the skills.
+- Context lookup accepts exact section ids, plain aliases, and `skills.<alias>`
+  as a compatibility form resolved through the same alias table. This keeps
+  natural display names decoupled from code namespaces.
 - Skill directories are loaded through `skills/<folder>/init.lua` gateways.
 - `llm_connect.skill_registry` is the preferred registry/admin facade name.
   Full namespace separation is still transitional for compatibility.
@@ -36,16 +44,15 @@ its own id, label, aliases, context manual, and public API.
    generically.
 3. Each gateway loads its skill implementation.
 4. Each skill registers metadata, availability, context aliases, context
-   section, and public API.
+   section, and optional explicit extra agent API names.
 5. Agent prompt builder lists active attached skills from registry metadata.
 6. Runtime builds a sandbox proxy containing only active, privilege-validated
-   skill APIs.
-7. Action code calls `llm_connect.skills.<skill_id>...`.
+   skill APIs. By default this proxy exposes only `.run`.
+7. Action code calls `llm_connect.skills.<skill_id>.run(...)`.
 
 ## Current Internal Skills
 
-- `command_agent`: Runtime Agent, controlled Lua execution and direct helpers
-  with chatcommand fallback.
+- `command_agent`: Runtime Agent, direct helpers with chatcommand fallback.
 - `worldedit_agent`: Node Printer, native batch node placement with high-level
   builders and WorldEdit bridge compatibility.
 
@@ -53,29 +60,25 @@ its own id, label, aliases, context manual, and public API.
 
 ### command_agent
 
-Preferred calls:
+Agent-facing calls:
 
 ```lua
-llm_connect.skills.command_agent.execute_lua({
-  code = "return { done=true, message='ok' }",
-}, player_name)
-llm_connect.skills.command_agent.precheck_lua({ code = "return 1" }, player_name)
-llm_connect.skills.command_agent.set_time({ time = 18000 }, player_name)
 llm_connect.skills.command_agent.run("set_time", { time = 18000 }, player_name)
-llm_connect.skills.command_agent.list_chatcommands({ only_allowed = true }, player_name)
-llm_connect.skills.command_agent.run_chatcommand({ command = "/time 18000" }, player_name)
+llm_connect.skills.command_agent.run("list_chatcommands", { only_allowed = true }, player_name)
+llm_connect.skills.command_agent.run("run_chatcommand", { command = "/time 18000" }, player_name)
 ```
 
 Avoid:
 
 ```lua
 core.set_time(18000)
+llm_connect.skills.command_agent.set_time({ time = 18000 }, player_name)
+llm_connect.skills.command_agent.set_time:run({ time = 18000 }, player_name)
 llm_connect.skills.command_agent.execute(...)
 ```
 
-`execute(...)` exists only as a compatibility alias for model mistakes.
-`execute_lua(...)` routes through `llm_connect.runtime.execute` and must keep
-runtime policy, precheck, and sandbox behavior authoritative.
+Compatibility helpers may exist internally, but the agent-facing contract is
+only `.run("<tool>", args, player_name)`.
 
 ### worldedit_agent
 
@@ -138,16 +141,18 @@ exist but should not be presented as normal API.
 
 - `/llm_skill_list singleplayer`
 - Attach/detach each internal skill and verify active skill count in trace.
-- Agent prompt: set time to `18000`; expect `command_agent.set_time`, not
-  `core.set_time`.
+- Agent prompt: set time to `18000`; expect
+  `command_agent.run("set_time", ...)`, not `core.set_time` or
+  `command_agent.set_time`.
 - Agent prompt: execute a tiny runtime-safe Lua action; expect
-  `command_agent.execute_lua`.
+  `command_agent.run("<tool>", args, player_name)` when using a skill.
 - Agent prompt: build a custom multi-part structure; prefer `print_plan` or a
   high-level builder.
 
 ## Offene Risiken
 
-- `command_agent` still exposes chatcommand fallback compatibility aliases.
-- `worldedit_agent` still exposes WorldEdit bridge primitives; complex
-  generated plans should prefer validated `preview_plan`/`print_plan`.
+- Skill implementation tables may keep compatibility helpers for direct Lua use,
+  but sandboxed agent exposure is limited to `.run` unless explicitly opted in.
+- `worldedit_agent` still implements WorldEdit bridge primitives behind `.run`;
+  complex generated plans should prefer validated `preview_plan`/`print_plan`.
 - Runtime-only skill attachment state can surprise after restart.

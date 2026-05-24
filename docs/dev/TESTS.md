@@ -432,9 +432,10 @@ In-game prompt/action:
 
 Expected trace/log evidence:
 
-- The generated action should call either:
-  `llm_connect.skills.command_agent.set_time({ time = 18000 }, player_name)` or
+- The generated action should call:
   `llm_connect.skills.command_agent.run('set_time', { time = 18000 }, player_name)`.
+- It must not call `llm_connect.skills.command_agent.set_time(...)` or
+  `llm_connect.skills.command_agent.set_time:run(...)`.
 - Fallback `run_chatcommand({ command = '/time 18000' }, player_name)` is
   acceptable only if native `core.set_timeofday` is unavailable.
 - It must not call `core.set_time(18000)`.
@@ -451,3 +452,202 @@ Related subsystem/files:
 - `context/basic_context.lua`
 - `context/context_registry.lua`
 - `agent/agent_context.lua`
+
+## 14. Agent Skill Result Guard Matrix
+
+Required config/settings:
+
+- Player has `llm`, `llm_agent`.
+- `worldedit_agent` is attached to the player.
+- LLM provider configured.
+- Recommended evidence settings:
+  `llm_live_trace_chat = true`,
+  `llm_live_trace_show_lua = true`,
+  `llm_trace_prompt_log = true`.
+
+In-game prompt/action:
+
+```text
+/llm baue mir ein beliebiges haus aus validen materialien hierhin an meine position
+```
+
+Expected trace/log evidence:
+
+- The generated action may use the canonical high-level builder:
+  `llm_connect.skills.worldedit_agent.run("build_house", args, player_name)`.
+- A result guard in this canonical form must be accepted:
+  `if not (res and res.ok) then return {done=false, continue=true, ...} end`.
+- Equivalent guards should also be accepted when observed:
+  `if res == nil or res.ok == false then ... end`,
+  `if not res.ok then ... end`,
+  `if not (res and res.success) then ... end`.
+- The runtime must not emit:
+  `lua_action reports done=true after a skill call without checking the skill result`
+  when the generated code contains one of the accepted guards above.
+- If a repair iteration happens, its previous-action history must describe the
+  real runtime/skill error, not a false missing-result-check error.
+- A successful run ends with `[core_executor] success` and no unnecessary repair
+  iteration caused by the result guard.
+
+What failure means:
+
+- `agent/agent_runtime.lua` is inferring Lua semantics from a too-narrow text
+  pattern. This is a guard/parser false positive, not necessarily a skill API
+  failure.
+- Repair prompts may become misleading because the model receives an incorrect
+  error diagnosis and edits unrelated arguments.
+
+Related subsystem/files:
+
+- `agent/agent_runtime.lua`
+- `agent/agent_flow.lua`
+- `agent/parser_utils.lua`
+- `skills/worldedit_agent/worldedit_agent.lua`
+
+## 15. Runtime Agent Invalid Skill Invocation Matrix
+
+Required config/settings:
+
+- Player has `llm`, `llm_agent`.
+- `command_agent` is attached to the player.
+- LLM provider configured.
+- Recommended evidence settings:
+  `llm_live_trace_chat = true`,
+  `llm_live_trace_show_lua = true`,
+  `llm_trace_prompt_log = true`.
+
+In-game prompt/action:
+
+```text
+/llm stelle die zeit auf 21000
+```
+
+Expected trace/log evidence:
+
+- Preferred action:
+  `llm_connect.skills.command_agent.run("set_time", {time = 21000}, player_name)`.
+- Fallback action, only when the native time tool is unavailable:
+  `llm_connect.skills.command_agent.run("run_chatcommand", {command = "/time 21000"}, player_name)`.
+- These invalid variants must not execute as successful actions:
+  `llm_connect.skills.command_agent.execute(...)`,
+  `llm_connect.skills.command_agent.set_time(...)`,
+  `llm_connect.skills.command_agent.set_time:run(...)`,
+  `llm_connect.skills.command_agent.run("set_time", ..., "singleplayer")`.
+- If the model emits an invalid direct/nested helper call, the runtime should
+  produce a concise correction pointing to:
+  `llm_connect.skills.command_agent.run("set_time", {time = 21000}, player_name)`.
+- The repair iteration should call the canonical `.run(...)` form instead of
+  only loading documentation and stopping.
+- Final result should report success only after the skill returned `ok=true`.
+
+What failure means:
+
+- Runtime-agent context still exposes or implies a legacy helper surface.
+- Invalid-call detection is too narrow, or repair history does not provide a
+  strong enough canonical replacement.
+
+Related subsystem/files:
+
+- `skills/command_agent/command_agent.lua`
+- `agent/agent_context.lua`
+- `agent/agent_runtime.lua`
+- `context/basic_context.lua`
+- `context/context_registry.lua`
+
+## 16. Context Iteration and Duplicate Lookup Matrix
+
+Required config/settings:
+
+- Player has `llm`, `llm_agent`.
+- Either `command_agent` or `worldedit_agent` is attached.
+- LLM provider configured.
+- Recommended evidence settings:
+  `llm_live_trace_chat = true`,
+  `llm_live_trace_show_lua = true`,
+  `llm_trace_prompt_log = true`.
+
+In-game prompt/action:
+
+```text
+/llm lade die node printer dokumentation und baue danach ein kleines holzhaus hier
+```
+
+Expected trace/log evidence:
+
+- A first context-only action may call:
+  `llm_connect.context.load("skills.worldedit_agent")` or a valid alias such as
+  `llm_connect.context.load("node_printer")`.
+- A prefixed skill alias such as `llm_connect.context.load("skills.node_printer")`
+  should resolve through the alias table to `skills.worldedit_agent`.
+- If context loading is only an intermediate step, the returned table should be
+  normalized to `done=false, continue=true`.
+- After the context appears in `[RETRIEVED CONTEXT CACHE]`, the next iteration
+  should use the cached documentation and call a skill.
+- Repeating the same context load should not be treated as task completion when
+  the user requested a later build action.
+- A duplicate context lookup may be reported as already cached, but it must not
+  mask an unresolved imperative task as `done=true`.
+- The flow should stop only after the build skill returns success, a real
+  blocker occurs, or the configured iteration limit is reached.
+
+What failure means:
+
+- Context-only result normalization or duplicate-context handling is ending the
+  loop too early.
+- The prompt history is not making cached context visible/actionable enough for
+  the next iteration.
+
+Related subsystem/files:
+
+- `agent/agent_runtime.lua`
+- `agent/agent_flow.lua`
+- `agent/agent_context.lua`
+- `context/context_registry.lua`
+- `skills/worldedit_agent/worldedit_agent.lua`
+
+## 17. Skill Context Alias Compatibility Matrix
+
+Required config/settings:
+
+- Player has `llm`, `llm_agent`.
+- `command_agent` and `worldedit_agent` are attached to the player.
+- LLM provider configured.
+- Recommended evidence settings:
+  `llm_live_trace_chat = true`,
+  `llm_live_trace_show_lua = true`,
+  `llm_trace_prompt_log = true`.
+
+In-game prompt/action:
+
+```text
+/llm lade die runtime-agent dokumentation und setze danach die zeit auf 18000
+```
+
+Expected trace/log evidence:
+
+- The context load may use the exact section `skills.command_agent`, a plain
+  alias such as `runtime_agent`, or a prefixed alias such as
+  `skills.runtime_agent`.
+- Plain and prefixed aliases should resolve to the same section:
+  `skills.command_agent`.
+- After documentation is loaded, the skill should be invoked through the stable
+  API:
+  `llm_connect.skills.command_agent.run("set_time", {time = 18000}, player_name)`.
+- The prompt should not require core code to know command-agent internals.
+  Section registration, aliases, and manuals remain owned by the skill.
+- Final result should report success only after the skill returned `ok=true`.
+
+What failure means:
+
+- Registry, context aliases, and skill display names drifted apart.
+- The model is inventing `skills.<alias>` keys that the context registry cannot
+  resolve.
+- Runtime-agent and command-agent naming is still ambiguous in the active skill
+  context.
+
+Related subsystem/files:
+
+- `context/context_registry.lua`
+- `skills/registry.lua`
+- `skills/command_agent/command_agent.lua`
+- `skills/worldedit_agent/worldedit_agent.lua`

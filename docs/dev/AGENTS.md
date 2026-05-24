@@ -42,11 +42,12 @@ Important current contracts:
 - `player_name` must be available in sandboxed and root-unrestricted agent
   actions.
 - Context docs are read from `doc.content`.
-- `command_agent` is labeled Runtime Agent; use
-  `execute_lua(...)` for controlled runtime-safe Lua and `set_time(...)` for
-  time changes. `core.set_time` is not available in safe runtime.
-- `worldedit_agent` is labeled Node Printer; use `print_plan` for generated
-  structures and high-level builders for simple natural-language builds.
+- Active skills are listed by registry metadata and must be invoked through
+  `llm_connect.skills.<skill_id>.run("<tool_name>", args, player_name)`.
+  Skill-specific examples belong in each skill's context manual, not in the
+  core agent contract.
+- `core.set_time` and other unavailable safe-core helpers must not be invented;
+  use an attached skill only when its manual documents an appropriate tool.
 
 ---
 
@@ -73,8 +74,8 @@ Observed load path from `lemr . --trace`:
 2. `context/context_registry.lua` registers bootstrap context sections:
    `agent.context_api`, `server.info`, `luanti.safe_core`,
    `mods.worldedit.status`, and `luanti.registered_nodes.preview`.
-3. `skills/registry.lua` loads internal skills explicitly:
-   `command_agent` and `worldedit_agent`.
+3. `skills/registry.lua` discovers Lua-first skill gateways under
+   `skills/*/init.lua`.
 4. `runtime/path_policy.lua` and `runtime/storage/*` initialize script storage.
 5. `agent/agent_runtime.lua` runs the dual-channel loop for visible text plus
    hidden `lua_action` blocks.
@@ -108,9 +109,10 @@ Important current log findings:
   `Invalid tooltip element(3): 'trace_prompt_log;Writes full request bodies ...'`.
   This points to an unescaped or too-long/multiline tooltip in
   `gui/config_gui.lua`.
-- Startup logs show undeclared global accesses in runtime storage modules:
+- Earlier startup logs showed undeclared global accesses in runtime storage modules:
   `path_policy` and `storage_backends` from
   `runtime/storage/runtime_scripts.lua` and `runtime/storage/trusted_mods.lua`.
+  The small fix is to use `rawget(_G, ...)` for fallback global reads.
 - A previous WorldEdit agent run failed first because `player_name` was nil
   inside the generated action, then failed because the model called nonexistent
   `llm_connect.skills.worldedit_agent.set_nodes`.
@@ -206,13 +208,18 @@ Current internal skills:
 - `worldedit_agent`
 
 The skill registry code exposes `attach_skill_to_player()` and
-`detach_skill_from_player()`, but `init.lua` currently looks for
-`attach_to_player()` and `detach_from_player()`. A future implementation session
-must verify this mismatch before assuming `/llm_skill_attach` works.
+`detach_skill_from_player()`. The skills facade exposes
+`attach_to_player()` and `detach_from_player()` for `init.lua`, so
+`/llm_skill_attach` uses the facade and should not create state for mistyped
+connected-player names.
 
 ### Node Printer Contract
 
 The supported public call form is:
+
+Native building operations such as `print_plan`, `build_platform`,
+`build_hut`, and `build_house` still need bounding-box snapshot/undo support
+before this branch is recommended for public live worlds.
 
 ```lua
 llm_connect.skills.worldedit_agent.run("print_plan", {
@@ -241,29 +248,22 @@ Do not call nonexistent direct methods such as:
 llm_connect.skills.worldedit_agent.set_nodes(...)
 ```
 
-Supported tools are listed in `skills/worldedit_agent/worldedit_agent.lua` under
-`TOOLS`. `print_plan` is preferred for custom generated structures. High-level
-builders should be preferred for simple natural-language building tasks:
-`build_hut`, `build_house`, `build_tower`, and `build_platform`.
+The implementation contains additional compatibility tools, but the stable
+agent-facing surface for this pass is `preview_plan`, `print_plan`,
+`build_platform`, `build_hut`, `build_house`, and `get_node`.
 
 ## Implementation Priorities
 
-### 1. Fix Skill Attach Command Compatibility
+### 1. Skill Attach Command Compatibility
 
-Problem:
+Status:
 
 - `skills/registry.lua` implements `attach_skill_to_player()` and
   `detach_skill_from_player()`.
 - `init.lua` uses `skills.attach_to_player` and `skills.detach_from_player`.
-
-Implementation target:
-
-- Either add compatibility aliases in `skills/registry.lua`, or update
-  `init.lua` to call the implemented names.
-- Preserve the existing meaning: root explicitly attaches or detaches a skill
-  for the target player's agent session.
-- After the fix, `/llm_skill_attach singleplayer worldedit_agent on` should
-  change `/llm_skill_list singleplayer` from `DETACHED` to `ATTACHED`.
+- `skills/skills_init.lua` provides that facade, so the compatibility layer is
+  present. Current follow-up risk is player-name validation, not missing attach
+  plumbing.
 
 Files:
 
@@ -292,7 +292,7 @@ Files:
 
 Problem:
 
-- Startup logs show undeclared global access for `path_policy` and
+- Earlier startup logs showed undeclared global access for `path_policy` and
   `storage_backends` inside storage modules.
 
 Implementation target:

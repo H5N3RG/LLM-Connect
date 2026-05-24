@@ -361,6 +361,22 @@ core.register_chatcommand("llm_health", {
     end,
 })
 
+local function resolve_connected_player_name(target)
+    target = tostring(target or ""):match("^%s*(.-)%s*$")
+    if target == "" then return nil, "missing player" end
+    local folded = target:lower()
+    local ci_match
+    for _, player in ipairs(core.get_connected_players() or {}) do
+        local pname = player:get_player_name()
+        if pname == target then return pname end
+        if pname:lower() == folded then ci_match = pname end
+    end
+    if ci_match then
+        return nil, "Player not found: " .. target .. ". Did you mean " .. ci_match .. "?"
+    end
+    return nil, "Player not found: " .. target
+end
+
 core.register_chatcommand("llm_skill_list", {
     description = "List LLM Connect skills for a player (root)",
     params      = "[player]",
@@ -368,6 +384,9 @@ core.register_chatcommand("llm_skill_list", {
     func = function(name, param)
         local target = (param and param:match("^%s*(%S+)%s*$")) or name
         if target == "" then target = name end
+        local resolved, perr = resolve_connected_player_name(target)
+        if not resolved then return false, perr end
+        target = resolved
         local skills = _G.llm_connect and (_G.llm_connect.skills or _G.llm_connect.skills_subsystem)
         if not skills or not skills.get_status then
             core.chat_send_player(name, "[LLM Skills] unavailable")
@@ -406,6 +425,9 @@ core.register_chatcommand("llm_skill_attach", {
         if not target or not skill_id then
             return false, "Usage: /llm_skill_attach <player> <skill_id> [on|off]"
         end
+        local resolved, perr = resolve_connected_player_name(target)
+        if not resolved then return false, perr end
+        target = resolved
         local enabled = not (mode == "off" or mode == "false" or mode == "0" or mode == "detach")
         local skills = _G.llm_connect and (_G.llm_connect.skills or _G.llm_connect.skills_subsystem)
         if not skills then return false, "skills unavailable" end
