@@ -309,11 +309,14 @@ local function build_lua_runtime_contract(player_name)
         "- In lua_action code, player_name is available as the current player's name.",
         "- core is available with the safe runtime subset configured by core_executor.lua.",
         "- Get the player with: local player = core.get_player_by_name(player_name)",
+        "- Direct node writes use node tables: core.set_node(pos, {name=\"default:stone\"}); do not pass a bare node-name string.",
         '- Finish actions with: return { done = true, message = "short result" }',
         '- Ask for another action step only with: return { done = false, continue = true, message = "why" }',
+        "- Check skill results before done=true; if a skill returns ok=false, return done=false with its message instead of claiming success.",
         "- Do not register nodes/items/entities/craftitems during runtime; Luanti registrations are load-time only.",
         "- Do not call core.set_time; use llm_connect.skills.command_agent.set_time({time=18000}, player_name) when command_agent is active.",
-        "- Detailed skill/API/server docs are not injected by default. Use llm_connect.context.list_sections(), search(query), and get_section(id) when details are needed.",
+        "- Detailed skill/API/server docs are not injected by default. Use llm_connect.context.load(key), lookup(key), list_sections(), search(query), and get_section(id) when details are needed.",
+        "- Context loading is an intermediate step only when another requested action still remains.",
     }
 
     if player then

@@ -313,12 +313,58 @@ local function is_context_action_code(code)
     return not uses_skill
 end
 
+local function has_effectful_action_code(code)
+    code = tostring(code or "")
+    local patterns = {
+        "llm_connect%s*%.%s*skills%s*%.",
+        "llm_connect%s*%.%s*agent%s*%.%s*request_permission%s*%(",
+        "core%s*%.%s*set_node%s*%(",
+        "core%s*%.%s*swap_node%s*%(",
+        "core%s*%.%s*add_node%s*%(",
+        "core%s*%.%s*remove_node%s*%(",
+        "core%s*%.%s*show_formspec%s*%(",
+        ":%s*set_pos%s*%(",
+    }
+    for _, pattern in ipairs(patterns) do
+        if code:find(pattern) then return true end
+    end
+    return false
+end
+
+local function uses_skill_call_code(code)
+    code = tostring(code or "")
+    return code:find("llm_connect%s*%.%s*skills%s*%.") ~= nil
+end
+
+local function returns_done_true_code(code)
+    code = tostring(code or "")
+    return code:find("return%s*{%s*done%s*=%s*true") ~= nil
+end
+
+local function checks_skill_result_code(code)
+    code = tostring(code or "")
+    if code:find("ok%s*==%s*false") then return true end
+    if code:find("success%s*==%s*false") then return true end
+    if code:find("not%s+[%w_]+%.ok") then return true end
+    if code:find("return%s+llm_connect%s*%.%s*skills%s*%.") then return true end
+    return false
+end
+
+local function ignored_skill_result_error(code)
+    if uses_skill_call_code(code) and returns_done_true_code(code) and not checks_skill_result_code(code) then
+        return "lua_action reports done=true after a skill call without checking the skill result"
+    end
+    return nil
+end
+
 local function mark_context_continuation(result)
     if not result or not (result.success or result.ok) then return end
     if result.is_context_action ~= true then return end
 
+    local explicit_done = false
     local explicit_continue = false
     if type(result.return_value) == "table" then
+        explicit_done = result.return_value.done == true
         explicit_continue = result.return_value.continue == true or result.return_value.done == false
     end
 
@@ -338,7 +384,10 @@ local function mark_context_continuation(result)
             has_content = has_content or (type(recent.content) == "string" and recent.content ~= "")
             has_hits = has_hits or (type(recent.sections) == "table" and #recent.sections > 0)
         end
-        if rv.ok ~= false and (has_content or has_hits) then
+        if explicit_done then
+            rv.done = true
+            rv.continue = false
+        elseif rv.ok ~= false and (has_content or has_hits) then
             rv.done = false
             rv.continue = true
         elseif explicit_continue then
@@ -366,16 +415,6 @@ local function mark_context_continuation(result)
     end
 end
 
-local function wants_continue(result)
-    if not result or not (result.success or result.ok) then return false end
-    if result.is_context_action == true then return true end
-    local rv = result.return_value
-    if type(rv) ~= "table" then return false end
-    if rv.continue == true then return true end
-    if rv.done == false then return true end
-    return false
-end
-
 local function action_history_entry(iteration, result)
     return result_utils.action_history_entry(iteration, result)
 end
@@ -399,39 +438,66 @@ local function execute_actions(player_name, actions)
         local code = action.code or ""
         live_emit("executor", player_name, "execute lua_action #" .. tostring(i), { bytes = #code })
         live_lua(player_name, code)
-        local result = runtime.execute({
-            actor = player_name,
-            origin = "agent.runtime",
-            role = "llm_agent",
-            action = "run_lua_action",
-            code = code,
-            options = {
-            sandbox = true,
-            required_priv = "llm_agent",
-            purpose = "agent",
-            source = "agent_runtime.lua_action",
-            chunk_name = "=(llm_connect_agent_action)",
+        local pre_error = ignored_skill_result_error(code)
+        if pre_error then
+            local result = {
+                ok = false,
+                success = false,
+                tool = "lua_action",
+                index = i,
+                action_code = code,
+                is_context_action = false,
+                error = pre_error,
+                message = pre_error .. ". Store the skill return value and handle res.ok == false before returning done=true.",
             }
-        })
-        result.tool = "lua_action"
-        result.index = i
-        result.action_code = code
-        result.is_context_action = is_context_action_code(code)
-        if result.is_context_action == true then
-            local root = get_root()
-            local registry = type(root) == "table" and (root.context_registry or (root.context_modules and root.context_modules.registry)) or nil
-            if registry and type(registry.consume_recent_context) == "function" then
-                result.retrieved_context = registry.consume_recent_context(player_name)
+            live_emit("error", player_name, result.message, { tool = result.tool })
+            results[#results + 1] = result
+        else
+            local result = runtime.execute({
+                actor = player_name,
+                origin = "agent.runtime",
+                role = "llm_agent",
+                action = "run_lua_action",
+                code = code,
+                options = {
+                    sandbox = true,
+                    required_priv = "llm_agent",
+                    purpose = "agent",
+                    source = "agent_runtime.lua_action",
+                    chunk_name = "=(llm_connect_agent_action)",
+                }
+            })
+            result.tool = "lua_action"
+            result.index = i
+            result.action_code = code
+            result.is_context_action = is_context_action_code(code)
+            if (result.success or result.ok)
+                and result.is_context_action ~= true
+                and type(result.return_value) == "table"
+                and result.return_value.done == true
+                and not has_effectful_action_code(code)
+            then
+                result.success = false
+                result.ok = false
+                result.error = "lua_action reported completion without calling any skill/core action"
+                result.return_value.message = "Call the documented skill/core API before returning done=true."
             end
+            if result.is_context_action == true then
+                local root = get_root()
+                local registry = type(root) == "table" and (root.context_registry or (root.context_modules and root.context_modules.registry)) or nil
+                if registry and type(registry.consume_recent_context) == "function" then
+                    result.retrieved_context = registry.consume_recent_context(player_name)
+                end
+            end
+            mark_context_continuation(result)
+            result.message = action_result_message(result)
+            live_emit(result.ok and "executor" or "error", player_name, result.message, {
+                tool = result.tool,
+                script_class = result.script_class,
+                error = result.error,
+            })
+            results[#results + 1] = result
         end
-        mark_context_continuation(result)
-        result.message = action_result_message(result)
-        live_emit(result.ok and "executor" or "error", player_name, result.message, {
-            tool = result.tool,
-            script_class = result.script_class,
-            error = result.error,
-        })
-        results[#results + 1] = result
     end
     return results
 end

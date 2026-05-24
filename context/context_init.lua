@@ -36,22 +36,6 @@ local function load_required(name, filename)
     return module
 end
 
-local function load_optional(name, filename)
-    local path = CONTEXT_DIR .. "/" .. filename
-    local ok, module = pcall(dofile, path)
-    if not ok then
-        core.log("warning", "[context_init] optional context module failed: " .. name .. " (" .. path .. ") — " .. tostring(module))
-        M[name] = {}
-        return M[name]
-    end
-    if module == nil then
-        core.log("warning", "[context_init] optional context module returned nil: " .. name .. " (" .. path .. ")")
-        module = {}
-    end
-    M[name] = module
-    return M[name]
-end
-
 local function registry_call(method, ...)
     local fn = M.registry and M.registry[method]
     if type(fn) ~= "function" then
@@ -68,9 +52,6 @@ local function registry_call(method, ...)
 end
 
 M.basic_context = load_required("basic_context", "basic_context.lua")
-M.serializers = load_optional("serializers", "context_serializers.lua")
-M.sections = load_optional("sections", "context_sections.lua")
-M.discovery = load_optional("discovery", "context_discovery.lua")
 M.registry = load_required("registry", "context_registry.lua")
 
 local function effective_player_name(player_name)

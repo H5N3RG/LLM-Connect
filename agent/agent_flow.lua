@@ -61,11 +61,22 @@ function result.action_history_entry(iteration, action_result)
     local prefix = string.format("[Iter %d Action %d] %s: ", tonumber(iteration) or 0, idx, status)
 
     local rv = action_result and action_result.return_value
+    if action_result and action_result.is_context_action == true and (action_result.success or action_result.ok) then
+        local ctx = action_result.retrieved_context
+        if type(ctx) == "table" and type(ctx.id) == "string" and ctx.id ~= "" then
+            return prefix .. "cached context section " .. tostring(ctx.id)
+        end
+    end
+
     if type(rv) == "table" then
         if rv.permission_required == true then
             return prefix .. tostring(rv.message or ("Permission requested: " .. tostring(rv.summary or rv.kind or "agent action")))
         end
         if type(rv.content) == "string" and rv.content ~= "" then
+            if action_result and action_result.is_context_action == true then
+                local id = tostring(rv.id or rv.resolved_id or "context")
+                return prefix .. tostring(rv.message or "context loaded") .. " (" .. id .. " cached)"
+            end
             local content = rv.content
             -- Keep context history lean. The model should have what it needs now.
             if #content > 2000 then content = content:sub(1, 2000) .. "\n... [large context truncated in history]" end
@@ -175,9 +186,10 @@ local function wants_continue(action_result)
     if rv.continue == true then return true end
     if rv.done == true then return false end
 
-    -- Context-only actions are intermediate steps once the runtime normalized
-    -- their result to "not done".
-    if action_result.is_context_action == true then return true end
+    -- Context-only actions are intermediate steps only when the runtime
+    -- normalized their result to "not done". Empty or failed lookups are
+    -- normalized to done=true and must not force a search loop.
+    if action_result.is_context_action == true then return rv.done == false end
 
     -- If it's a successful skill action but doesn't say it's done,
     -- we might want to allow the model one more turn to acknowledge or follow up.

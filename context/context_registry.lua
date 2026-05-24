@@ -129,8 +129,9 @@ function M.register_section(def)
 end
 
 function M.unregister_section(id)
-    id = normalize_id(id)
-    if not id then return false, "missing id" end
+    local normalized, err = normalize_id(id)
+    if not normalized then return false, err or "missing id" end
+    id = normalized
     M.sections[id] = nil
     return true
 end
@@ -403,7 +404,8 @@ local function register_builtin_sections()
             "load()/lookup()/get_section() return {ok,id,title,summary,content,message}. Read docs from doc.content.",
             "Do not test doc.commands or doc.api after context.load(); those fields are not part of the context result.",
             "Prefer load()/lookup() with exact ids or glossary aliases. Use search() only if no alias/id is known.",
-            "Return the loaded context table directly, or return {done=false, continue=true, message='Loaded context: ...'} before acting.",
+            "Return the loaded context table directly, or return {done=false, continue=true, message='Loaded context: ...'} when the loaded docs are needed for a later action.",
+            "If the whole user request is only to load/check/show documentation, return {done=true, message='Context loaded: ...'} after a successful load.",
             "Do not guess complex APIs, server state, node names, or skill arguments when a context section can be requested first.",
         }, "\n"),
     })
@@ -447,6 +449,7 @@ local function register_builtin_sections()
             "The agent sandbox exposes a safe subset as core.* and minetest.* alias.",
             "Common reads: core.get_node, get_node_or_nil, get_meta, get_node_timer, find_node_near, find_nodes_in_area.",
             "Common writes: core.set_node, swap_node, remove_node, add_node.",
+            "For node writes, use node tables: core.set_node(pos, {name='default:stone'}); do not pass a bare node-name string.",
             "Players/objects: core.get_player_by_name, get_connected_players, get_objects_inside_radius.",
             "Helpers: core.pos_to_string, string_to_pos, serialize, deserialize, after, sound_play, show_formspec.",
             "Time changes are not exposed as core.set_time in the safe runtime. If command_agent is active, use llm_connect.skills.command_agent.set_time({time=18000}, player_name).",

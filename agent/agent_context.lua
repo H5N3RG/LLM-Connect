@@ -112,7 +112,7 @@ end
 function context_cache.render_for_prompt(state, max_chars)
     if not state or not state.context_cache then return "" end
     local cache = ensure_cache(state)
-    local lines = {}
+    local blocks = {}
     local remaining = tonumber(max_chars) or 6000
 
     for _, id in ipairs(cache.order) do
@@ -120,9 +120,18 @@ function context_cache.render_for_prompt(state, max_chars)
         if sec and sec.content and sec.content ~= "" and remaining > 0 then
             local block = ("[CACHED CONTEXT: %s]\n%s"):format(tostring(sec.title or id), tostring(sec.content))
             if #block > remaining then block = block:sub(1, remaining) .. "\n... [cached context truncated]" end
-            lines[#lines + 1] = block
+            blocks[#blocks + 1] = block
             remaining = remaining - #block
         end
+    end
+
+    if #blocks == 0 then return "" end
+
+    local lines = {
+        "Note: The following context sections are already loaded in this prompt. Use them directly; do not call load()/lookup() for the same section again unless the user asks for newer or different context.",
+    }
+    for _, block in ipairs(blocks) do
+        lines[#lines + 1] = block
     end
 
     return table.concat(lines, "\n\n")
@@ -185,20 +194,24 @@ function prompt_builder.build_system_prompt(player_name, options, state, deps)
         "Lua action rules:",
         "- player_name is available in the sandbox. ALWAYS include it in skill calls.",
         "- core is available as the safe Luanti API namespace.",
+        "- For direct node writes, use node tables: core.set_node(pos, {name='default:stone'}). Do not pass bare node-name strings to set_node/add_node/swap_node.",
         "- Return {done=false, continue=true, message=\"...\"} if you need to perform more steps after the current block.",
         "- Results of load()/lookup() are provided in the next turn's [RETRIEVED CONTEXT CACHE] or action history.",
-        "- If you only load context, set done=false to receive the data in the next turn.",
+        "- If context is only an intermediate step for another requested action, set done=false to receive the data and continue.",
+        "- If the user's whole request is to load/check/show documentation and the context load succeeded, set done=true and stop.",
         "- ONLY set done=true when the entire task requested by the user is complete.",
         "- For imperative user requests, keep taking action until the requested task is done or a real blocker occurs.",
         "- Do not ask the player to confirm that an internal action block was processed. The runtime processes it automatically.",
         "- Do not stop after planning. If a skill call can advance the task, call it in lua_action.",
+        "- For imperative requests, a lua_action that only returns done=true/message without calling a skill/core action is invalid.",
+        "- Always check skill results before done=true: local res = llm_connect.skills.<id>.run(...); if res and res.ok == false then return {done=false, continue=true, message=res.message or res.error or 'Skill failed'} end.",
         "- Do not ask preference questions after the user already asked you to act freely. Choose reasonable defaults and proceed.",
         "- Never say 'next step follows after execution' or ask for confirmation between action blocks.",
         "- If a risky or destructive action needs explicit player approval, call llm_connect.agent.request_permission({kind='...', summary='...'}) in lua_action instead of asking in visible text.",
         "- Self-context API: load(key), lookup(key), keys(), has(key), list_sections(), get_section(id).",
         "- Discover context ids and aliases with llm_connect.context.keys() or list_sections() before loading optional details.",
         "- load()/lookup()/get_section() return {ok,id,title,summary,content,message}; read documentation from doc.content.",
-        "- Do not expect doc.commands or doc.api fields from context.load(); use doc.content, then continue and call the documented skill API.",
+        "- Do not expect doc.commands or doc.api fields from context.load(); use doc.content, then continue and call the documented skill API only when the user requested an action beyond loading docs.",
         "- If using search(query), remember it returns an object: {ok=true,count=n,sections={...}}, not an array or string.",
     }
 
