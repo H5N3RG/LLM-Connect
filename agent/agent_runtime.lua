@@ -466,6 +466,37 @@ local function should_retry_failed_actions(state, action_results)
     return retry_policy.should_retry_failed_actions(state, action_results)
 end
 
+local function has_unclosed_action_fence(text)
+    text = tostring(text or "")
+    local opens = 0
+    for _ in text:gmatch("```%s*[Ll][Uu][Aa]_[Aa][Cc][Tt][Ii][Oo][Nn]%s*\n") do
+        opens = opens + 1
+    end
+    if opens == 0 then return false end
+
+    local fences = 0
+    for _ in text:gmatch("```") do
+        fences = fences + 1
+    end
+    return fences % 2 == 1
+end
+
+local function truncated_action_result(raw, finish_reason)
+    local code = tostring(raw or "")
+    if #code > 1200 then code = code:sub(1, 1200) .. "\n... [truncated response]" end
+    return {
+        ok = false,
+        success = false,
+        tool = "lua_action",
+        index = 1,
+        action_code = code,
+        is_context_action = false,
+        truncated_action = true,
+        error = "LLM response ended before closing lua_action block",
+        message = "LLM response ended before closing lua_action block (finish_reason=" .. tostring(finish_reason or "unknown") .. "). Retry with one concise complete lua_action block.",
+    }
+end
+
 local function execute_actions(player_name, actions, state)
     local runtime = get_runtime()
     local results = {}
@@ -670,6 +701,12 @@ local function run_iteration(player_name, user_message, state, callbacks)
                 state_store.append_action_result(state, r)
                 state_store.append_tool_history(state, action_history_entry(state.iteration, r))
             end
+        elseif response.finish_reason == "length" and has_unclosed_action_fence(response.content or "") then
+            action_results = { truncated_action_result(response.content or "", response.finish_reason) }
+            for _, r in ipairs(action_results) do
+                state_store.append_action_result(state, r)
+                state_store.append_tool_history(state, action_history_entry(state.iteration, r))
+            end
         end
 
         if callbacks and callbacks.on_step then
@@ -686,7 +723,7 @@ local function run_iteration(player_name, user_message, state, callbacks)
         -- out of the final answer so planning chatter from intermediate
         -- iterations does not masquerade as completion. Pure text turns remain
         -- normal chat responses.
-        if #actions == 0 then
+        if #actions == 0 and #action_results == 0 then
             state_store.append_visible(state, visible)
         end
 

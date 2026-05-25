@@ -202,6 +202,23 @@ end
 
 flow.wants_continue = wants_continue
 
+local function truncated_action_decision(state, action_results)
+    for _, action_result in ipairs(action_results or {}) do
+        if action_result and action_result.truncated_action == true then
+            state.truncated_action_retries = (state.truncated_action_retries or 0) + 1
+            if state.truncated_action_retries <= 2 then
+                if core and core.log then
+                    core.log("warning", ("[agent_flow] truncated lua_action response; scheduling continuation %d/2")
+                        :format(tonumber(state.truncated_action_retries) or 0))
+                end
+                return true, true
+            end
+            return true, false
+        end
+    end
+    return false, false
+end
+
 function flow.decide_after_step(state, action_results, deps)
     deps = deps or {}
     local decision = {
@@ -215,6 +232,17 @@ function flow.decide_after_step(state, action_results, deps)
             decision.reason = action_result.is_context_action and "context_lookup" or "action_requested_continue"
             return decision
         end
+    end
+
+    local saw_truncated, continue_truncated = truncated_action_decision(state, action_results)
+    if continue_truncated then
+        decision.continue = true
+        decision.reason = "truncated_action_retry"
+        return decision
+    end
+    if saw_truncated then
+        decision.reason = "truncated_action_retry_limit"
+        return decision
     end
 
     local retry_policy = deps.retry or retry

@@ -227,7 +227,7 @@ local function get_context(player_name)
         "Selection: " .. sel_str,
         env,
         "Canonical invocation: llm_connect.skills.worldedit_agent.run(\"<tool>\", args, player_name).",
-        "Stable tools: preview_plan, print_plan, build_platform, build_hut, build_house, get_node.",
+        "Stable tools: preview_plan, print_plan, get_node.",
         "WorldEdit bridge calls exist internally for compatibility but are experimental agent-facing surface.",
     }
 
@@ -271,19 +271,28 @@ end
 
 
 -- ===========================================================================
--- Agent-friendly high-level builders
+-- Native node-printer primitives
 -- ===========================================================================
 
-local function clamp_int(v, default, min_v, max_v)
-    v = tonumber(v or default) or default
-    v = math.floor(v)
-    if min_v and v < min_v then v = min_v end
-    if max_v and v > max_v then v = max_v end
-    return v
-end
-
 local function place_node(name, x, y, z)
-    core.set_node({x = x, y = y, z = z}, {name = name})
+    local pos = {x = x, y = y, z = z}
+    local pos_label = core.pos_to_string and core.pos_to_string(pos) or ("(" .. x .. "," .. y .. "," .. z .. ")")
+    local ok, err = pcall(core.set_node, pos, {name = name})
+    if not ok then
+        return false, "set_node failed at " .. pos_label .. ": " .. tostring(err)
+    end
+
+    local read = core.get_node_or_nil and core.get_node_or_nil(pos) or core.get_node(pos)
+    if not read then
+        return false, "node write could not be verified at " .. pos_label .. " (unloaded or inaccessible mapblock)"
+    end
+    if read.name == "ignore" then
+        return false, "node write hit ignore at " .. pos_label .. " (mapblock not loaded)"
+    end
+    if read.name ~= name then
+        return false, "node mismatch at " .. pos_label .. ": expected " .. tostring(name) .. ", got " .. tostring(read.name)
+    end
+    return true
 end
 
 local function fill_box(p1, p2, node, hollow)
@@ -336,11 +345,30 @@ local function plan_int(v, default, min_v, max_v)
 end
 
 local function resolve_plan_origin(args, player_name)
-    if type(args.origin) == "table" then return copy_pos(args.origin) end
-    if type(args.pos) == "table" and args.absolute ~= true then return make_pos(args, player_name) end
+    local absolute = args and args.absolute == true
+    if absolute then
+        if type(args.origin) == "table" then return copy_pos(args.origin) end
+        return { x = 0, y = 0, z = 0 }
+    end
+
+    if args and (args.origin == nil or args.origin == "player") then
+        local player = player_name and core.get_player_by_name(player_name)
+        if player then return copy_pos(player:get_pos()) end
+        return nil, "relative plan requires a player position"
+    end
+
+    if type(args.origin) == "table" then
+        local origin = copy_pos(args.origin)
+        if origin.x == 0 and origin.y == 0 and origin.z == 0 then
+            return nil, "origin={x=0,y=0,z=0} with absolute=false would build at world origin; omit origin or use origin=\"player\" to build at the player"
+        end
+        return origin
+    end
+
+    if type(args.pos) == "table" then return make_pos(args, player_name) end
     local player = player_name and core.get_player_by_name(player_name)
     if player then return copy_pos(player:get_pos()) end
-    return { x = 0, y = 0, z = 0 }
+    return nil, "relative plan requires a player position"
 end
 
 local function plan_pos(raw, origin, absolute)
@@ -348,6 +376,110 @@ local function plan_pos(raw, origin, absolute)
     local out = copy_pos(pos or raw)
     if absolute == true then return out end
     return add_pos(origin, out)
+end
+
+local function mul_pos(v, n)
+    return {
+        x = (v and v.x or 0) * n,
+        y = (v and v.y or 0) * n,
+        z = (v and v.z or 0) * n,
+    }
+end
+
+local function vector_from(raw, default, label)
+    if raw == nil then return copy_pos(default), nil end
+    if type(raw) == "string" then
+        local key = raw:lower()
+        local axes = {
+            x = {x=1,y=0,z=0},
+            y = {x=0,y=1,z=0},
+            z = {x=0,y=0,z=1},
+            ["-x"] = {x=-1,y=0,z=0},
+            ["-y"] = {x=0,y=-1,z=0},
+            ["-z"] = {x=0,y=0,z=-1},
+            up = {x=0,y=1,z=0},
+            down = {x=0,y=-1,z=0},
+            north = {x=0,y=0,z=1},
+            south = {x=0,y=0,z=-1},
+            east = {x=1,y=0,z=0},
+            west = {x=-1,y=0,z=0},
+        }
+        raw = axes[key]
+    end
+    if type(raw) ~= "table" then
+        return nil, (label or "dir") .. ": direction vector must be {x=...,y=...,z=...}"
+    end
+    local v = copy_pos(raw)
+    if v.x == 0 and v.y == 0 and v.z == 0 then
+        return nil, (label or "dir") .. ": direction vector must not be zero"
+    end
+    return v, nil
+end
+
+local function count_items(list)
+    return type(list) == "table" and #list or 0
+end
+
+local function reject_trivial_solid_plan(args)
+    if args and args.allow_solid_volume == true then return nil end
+    if count_items(args and args.nodes) > 0 then return nil end
+    if count_items(args and args.lines) > 0 then return nil end
+    if count_items(args and args.planes) > 0 then return nil end
+    if count_items(args and args.rows) > 0 then return nil end
+    if count_items(args and args.boxes) > 0 then return nil end
+    if count_items(args and args.volumes) ~= 1 then return nil end
+
+    local volume = args.volumes[1]
+    if type(volume) ~= "table" or volume.hollow == true then return nil end
+    local size1 = plan_int(volume.size1 or volume.width or volume.w, 1, 1, 20000)
+    local size2 = plan_int(volume.size2 or volume.height or volume.h, 1, 1, 20000)
+    local size3 = plan_int(volume.size3 or volume.depth or volume.length or volume.l, 1, 1, 20000)
+    if size1 * size2 * size3 < 64 then return nil end
+
+    return "single solid volume plans are not valid generated structures; compose named buildings from floors, walls, openings, roofs, towers or battlements, or set allow_solid_volume=true only for an explicit literal cube/block request"
+end
+
+local function append_op(ops, pos, node, limit)
+    if #ops >= limit then return false, "plan exceeds max_nodes=" .. tostring(limit) end
+    ops[#ops + 1] = { x = pos.x, y = pos.y, z = pos.z, node = node }
+    return true
+end
+
+local function append_directed_ops(ops, start, dirs, sizes, node, hollow, limit)
+    local dims = #dirs
+    if dims == 1 then
+        for i = 0, sizes[1] - 1 do
+            local ok, err = append_op(ops, add_pos(start, mul_pos(dirs[1], i)), node, limit)
+            if not ok then return false, err end
+        end
+        return true
+    end
+
+    if dims == 2 then
+        for i = 0, sizes[1] - 1 do
+            for j = 0, sizes[2] - 1 do
+                local pos = add_pos(add_pos(start, mul_pos(dirs[1], i)), mul_pos(dirs[2], j))
+                local ok, err = append_op(ops, pos, node, limit)
+                if not ok then return false, err end
+            end
+        end
+        return true
+    end
+
+    for i = 0, sizes[1] - 1 do
+        for j = 0, sizes[2] - 1 do
+            for k = 0, sizes[3] - 1 do
+                local boundary = i == 0 or j == 0 or k == 0
+                    or i == sizes[1] - 1 or j == sizes[2] - 1 or k == sizes[3] - 1
+                if not hollow or boundary then
+                    local pos = add_pos(add_pos(add_pos(start, mul_pos(dirs[1], i)), mul_pos(dirs[2], j)), mul_pos(dirs[3], k))
+                    local ok, err = append_op(ops, pos, node, limit)
+                    if not ok then return false, err end
+                end
+            end
+        end
+    end
+    return true
 end
 
 local function append_box_ops(ops, p1, p2, node, hollow, limit)
@@ -370,7 +502,11 @@ end
 
 local function build_node_plan(args, player_name)
     args = args or {}
-    local origin = resolve_plan_origin(args, player_name)
+    local trivial_err = reject_trivial_solid_plan(args)
+    if trivial_err then return nil, trivial_err end
+
+    local origin, origin_err = resolve_plan_origin(args, player_name)
+    if not origin then return nil, origin_err end
     local absolute = args.absolute == true
     local max_nodes = tonumber(args.max_nodes or 20000) or 20000
     local ops = {}
@@ -378,12 +514,56 @@ local function build_node_plan(args, player_name)
     for _, item in ipairs(args.nodes or {}) do
         local node, err = resolve_node(tostring(item.node or item.name or item[4] or args.node or "air"))
         if not node then return nil, "nodes: " .. err end
-        local raw_pos = item.pos or { x = item.x or item[1], y = item.y or item[2], z = item.z or item[3] }
+        local raw_pos = item.at or item.pos or { x = item.x or item[1], y = item.y or item[2], z = item.z or item[3] }
         local pos = plan_pos(raw_pos, origin, absolute)
-        if #ops >= max_nodes then return nil, "plan exceeds max_nodes=" .. tostring(max_nodes) end
-        ops[#ops + 1] = { x = pos.x, y = pos.y, z = pos.z, node = node }
+        local ok, oerr = append_op(ops, pos, node, max_nodes)
+        if not ok then return nil, oerr end
     end
 
+    for _, line in ipairs(args.lines or {}) do
+        local node, err = resolve_node(tostring(line.node or line.name or args.node or "air"))
+        if not node then return nil, "lines: " .. err end
+        local dir, derr = vector_from(line.dir or line.direction, {x=1,y=0,z=0}, "lines.dir")
+        if not dir then return nil, derr end
+        local len = plan_int(line.size or line.length or line.count, 1, 1, max_nodes)
+        local start = plan_pos(line.from or line.at or line.pos or line, origin, absolute)
+        local ok, lerr = append_directed_ops(ops, start, {dir}, {len}, node, false, max_nodes)
+        if not ok then return nil, lerr end
+    end
+
+    for _, plane in ipairs(args.planes or {}) do
+        local node, err = resolve_node(tostring(plane.node or plane.name or args.node or "air"))
+        if not node then return nil, "planes: " .. err end
+        local dir1, d1err = vector_from(plane.dir1, {x=1,y=0,z=0}, "planes.dir1")
+        if not dir1 then return nil, d1err end
+        local dir2, d2err = vector_from(plane.dir2, {x=0,y=0,z=1}, "planes.dir2")
+        if not dir2 then return nil, d2err end
+        local size1 = plan_int(plane.size1 or plane.width or plane.w, 1, 1, max_nodes)
+        local size2 = plan_int(plane.size2 or plane.height or plane.h or plane.depth or plane.length or plane.l, 1, 1, max_nodes)
+        local start = plan_pos(plane.from or plane.at or plane.pos or plane, origin, absolute)
+        local ok, perr = append_directed_ops(ops, start, {dir1, dir2}, {size1, size2}, node, false, max_nodes)
+        if not ok then return nil, perr end
+    end
+
+    for _, volume in ipairs(args.volumes or {}) do
+        local node, err = resolve_node(tostring(volume.node or volume.name or args.node or "air"))
+        if not node then return nil, "volumes: " .. err end
+        local dir1, d1err = vector_from(volume.dir1, {x=1,y=0,z=0}, "volumes.dir1")
+        if not dir1 then return nil, d1err end
+        local dir2, d2err = vector_from(volume.dir2, {x=0,y=1,z=0}, "volumes.dir2")
+        if not dir2 then return nil, d2err end
+        local dir3, d3err = vector_from(volume.dir3, {x=0,y=0,z=1}, "volumes.dir3")
+        if not dir3 then return nil, d3err end
+        local size1 = plan_int(volume.size1 or volume.width or volume.w, 1, 1, max_nodes)
+        local size2 = plan_int(volume.size2 or volume.height or volume.h, 1, 1, max_nodes)
+        local size3 = plan_int(volume.size3 or volume.depth or volume.length or volume.l, 1, 1, max_nodes)
+        local start = plan_pos(volume.from or volume.at or volume.pos or volume, origin, absolute)
+        local ok, verr = append_directed_ops(ops, start, {dir1, dir2, dir3}, {size1, size2, size3}, node, volume.hollow == true, max_nodes)
+        if not ok then return nil, verr end
+    end
+
+    -- Legacy inputs are accepted for old callers, but the model-facing contract
+    -- is nodes/lines/planes/volumes.
     for _, row in ipairs(args.rows or {}) do
         local node, err = resolve_node(tostring(row.node or row.name or args.node or "air"))
         if not node then return nil, "rows: " .. err end
@@ -426,21 +606,12 @@ local function print_plan(args, player_name)
     local ops, err, origin = build_node_plan(args or {}, player_name)
     if not ops then return { ok = false, success = false, message = err } end
     if #ops == 0 then
-        return { ok = false, success = false, message = "print_plan: no nodes, rows, or boxes supplied" }
-    end
-    if args and args.dry_run == true then
-        return {
-            ok = true,
-            success = true,
-            message = string.format("Plan validated: %d node writes", #ops),
-            data = { nodes = #ops, origin = origin },
-        }
+        return { ok = false, success = false, message = "print_plan: no nodes, lines, planes, or volumes supplied" }
     end
 
     local by_node = {}
     local minp, maxp
     for _, op in ipairs(ops) do
-        place_node(op.node, op.x, op.y, op.z)
         by_node[op.node] = (by_node[op.node] or 0) + 1
         if not minp then
             minp = { x = op.x, y = op.y, z = op.z }
@@ -451,142 +622,58 @@ local function print_plan(args, player_name)
         end
     end
 
+    if args and args.dry_run == true then
+        return {
+            ok = true,
+            success = true,
+            message = string.format("Plan validated: %d node writes", #ops),
+            data = { nodes = #ops, materials = by_node, origin = origin, min = minp, max = maxp },
+        }
+    end
+
+    local failed = {}
+    for _, op in ipairs(ops) do
+        local ok, perr = place_node(op.node, op.x, op.y, op.z)
+        if not ok then
+            failed[#failed + 1] = perr or ("write failed at (" .. tostring(op.x) .. "," .. tostring(op.y) .. "," .. tostring(op.z) .. ")")
+            if #failed >= 5 then break end
+        end
+    end
+
+    if #failed > 0 then
+        local message = string.format(
+            "print_plan wrote with verification failures: %d sample failure(s); first: %s",
+            #failed,
+            failed[1]
+        )
+        core.log("warning", ("[worldedit_agent] %s | origin=%s min=%s max=%s nodes=%d"):format(
+            message,
+            core.pos_to_string and core.pos_to_string(origin) or "?",
+            core.pos_to_string and core.pos_to_string(minp) or "?",
+            core.pos_to_string and core.pos_to_string(maxp) or "?",
+            #ops
+        ))
+        return {
+            ok = false,
+            success = false,
+            message = message,
+            data = { nodes = #ops, materials = by_node, origin = origin, min = minp, max = maxp, failures = failed },
+        }
+    end
+
+    core.log("action", ("[worldedit_agent] print_plan verified %d node write(s) | origin=%s min=%s max=%s"):format(
+        #ops,
+        core.pos_to_string and core.pos_to_string(origin) or "?",
+        core.pos_to_string and core.pos_to_string(minp) or "?",
+        core.pos_to_string and core.pos_to_string(maxp) or "?"
+    ))
+
     return {
         ok = true,
         success = true,
         message = string.format("Printed %d nodes across %d material(s)", #ops, table_len(by_node)),
         data = { nodes = #ops, materials = by_node, origin = origin, min = minp, max = maxp },
     }
-end
-
-local function centered_origin(args, player_name, width, length)
-    local p = make_pos(args, player_name)
-    return {
-        x = p.x - math.floor(width / 2),
-        y = p.y,
-        z = p.z - math.floor(length / 2),
-    }
-end
-
-local function resolve_material(args, key, default_node, label)
-    local node, err = resolve_node(tostring(args[key] or default_node))
-    if not node then return nil, (label or key) .. ": " .. err end
-    return node, nil
-end
-
-local function build_platform(args, player_name)
-    local width = clamp_int(args.width or args.w, 7, 1, 64)
-    local length = clamp_int(args.length or args.l, 7, 1, 64)
-    local base = centered_origin(args, player_name, width, length)
-    local floor, ferr = resolve_material(args, "node", "default:stone", "platform")
-    if not floor then return {ok=false, message=ferr} end
-    local count = fill_box(base, {x=base.x + width - 1, y=base.y, z=base.z + length - 1}, floor, false)
-    return {ok=true, message=string.format("Platform %dx%d %s centered near (%d,%d,%d): %d nodes", width, length, floor, base.x, base.y, base.z, count)}
-end
-
-local function build_house(args, player_name)
-    local width  = clamp_int(args.width or args.w, 7, 3, 32)
-    local length = clamp_int(args.length or args.l, 7, 3, 32)
-    local height = clamp_int(args.height or args.h, 4, 3, 16)
-    local base = centered_origin(args, player_name, width, length)
-
-    local floor, ferr = resolve_material(args, "floor", "default:stone", "floor")
-    local wall,  werr = resolve_material(args, "wall",  args.node or "default:wood", "wall")
-    local roof,  rerr = resolve_material(args, "roof",  "default:cobble", "roof")
-    local glass, gerr = resolve_material(args, "window", "default:glass", "window")
-    if not floor then return {ok=false, message=ferr} end
-    if not wall then return {ok=false, message=werr} end
-    if not roof then return {ok=false, message=rerr} end
-    if not glass then return {ok=false, message=gerr} end
-
-    local count = 0
-    -- floor
-    count = count + fill_box(base, {x=base.x + width - 1, y=base.y, z=base.z + length - 1}, floor, false)
-
-    -- walls
-    for y = base.y + 1, base.y + height do
-        for x = base.x, base.x + width - 1 do
-            for z = base.z, base.z + length - 1 do
-                local boundary = x == base.x or x == base.x + width - 1 or z == base.z or z == base.z + length - 1
-                if boundary then
-                    local front = z == base.z
-                    local door = front and x == base.x + math.floor(width / 2) and (y == base.y + 1 or y == base.y + 2)
-                    local window = (y == base.y + 2) and (
-                        (front and (x == base.x + 1 or x == base.x + width - 2)) or
-                        (z == base.z + length - 1 and (x == base.x + 1 or x == base.x + width - 2))
-                    )
-                    if door then
-                        place_node("air", x, y, z)
-                    elseif window then
-                        place_node(glass, x, y, z)
-                        count = count + 1
-                    else
-                        place_node(wall, x, y, z)
-                        count = count + 1
-                    end
-                else
-                    place_node("air", x, y, z)
-                end
-            end
-        end
-    end
-
-    -- roof slab/overhang
-    count = count + fill_box(
-        {x=base.x - 1, y=base.y + height + 1, z=base.z - 1},
-        {x=base.x + width, y=base.y + height + 1, z=base.z + length},
-        roof, false
-    )
-
-    return {ok=true, message=string.format("House %dx%dx%d built with %s/%s/%s near (%d,%d,%d): %d nodes", width, height, length, floor, wall, roof, base.x, base.y, base.z, count)}
-end
-
-local function build_hut(args, player_name)
-    args = args or {}
-    args.width = args.width or args.w or 5
-    args.length = args.length or args.l or 5
-    args.height = args.height or args.h or 3
-    args.floor = args.floor or "default:stone"
-    args.wall = args.wall or args.node or "default:wood"
-    args.roof = args.roof or "default:cobble"
-    return build_house(args, player_name)
-end
-
-local function build_tower(args, player_name)
-    local radius = clamp_int(args.radius or args.r, 3, 2, 16)
-    local height = clamp_int(args.height or args.h, 10, 4, 64)
-    local pos = make_pos(args, player_name)
-    local wall, werr = resolve_material(args, "wall", args.node or "default:cobble", "wall")
-    local floor, ferr = resolve_material(args, "floor", "default:stone", "floor")
-    local glass, gerr = resolve_material(args, "window", "default:glass", "window")
-    if not wall then return {ok=false, message=werr} end
-    if not floor then return {ok=false, message=ferr} end
-    if not glass then return {ok=false, message=gerr} end
-
-    local count = 0
-    for y = pos.y, pos.y + height do
-        for x = pos.x - radius, pos.x + radius do
-            for z = pos.z - radius, pos.z + radius do
-                local dx, dz = x - pos.x, z - pos.z
-                local d2 = dx * dx + dz * dz
-                local outer = d2 <= radius * radius
-                local inner = d2 < (radius - 1) * (radius - 1)
-                if outer and (not inner or y == pos.y or y == pos.y + height) then
-                    if y > pos.y + 1 and y < pos.y + height and (y % 3 == 0) and (math.abs(dx) == radius or math.abs(dz) == radius) then
-                        place_node(glass, x, y, z)
-                    elseif y == pos.y then
-                        place_node(floor, x, y, z)
-                    else
-                        place_node(wall, x, y, z)
-                    end
-                    count = count + 1
-                elseif inner then
-                    place_node("air", x, y, z)
-                end
-            end
-        end
-    end
-    return {ok=true, message=string.format("Tower radius=%d height=%d built at (%d,%d,%d): %d nodes", radius, height, pos.x, pos.y, pos.z, count)}
 end
 
 local function compat_set_node(pos, node_name)
@@ -642,29 +729,16 @@ local function compat_get_node(pos)
     }
 end
 
-local function compat_build_structure(args, player_name)
-    if type(args) ~= "table" then
-        return {ok=false, success=false, message="build_structure: args must be a table"}
-    end
-    local plan = {
-        nodes = args.nodes or {},
-        rows = args.rows,
-        boxes = args.boxes,
-        max_nodes = args.max_nodes,
-        absolute = args.absolute ~= false,
-    }
-    if type(args.origin) == "table" then
-        plan.origin = args.origin
-        plan.absolute = false
-    elseif type(args.pos) == "table" and args.absolute == false then
-        plan.pos = args.pos
-    end
-    return print_plan(plan, player_name)
-end
-
 -- ===========================================================================
 -- Tool runner
 -- ===========================================================================
+
+local REMOVED_SEMANTIC_BUILDERS = {
+    build_platform = true,
+    build_hut = true,
+    build_house = true,
+    build_tower = true,
+}
 
 local function run_tool(tool_name, args, player_name)
     tool_name = tostring(tool_name or "")
@@ -693,26 +767,16 @@ local function run_tool(tool_name, args, player_name)
     elseif tool_name == "preview_plan" then
         args.dry_run = true
         return print_plan(args, player_name)
-    elseif tool_name == "build_structure" then
-        return compat_build_structure(args, player_name)
     elseif tool_name == "get_node" then
         return compat_get_node(args.pos or args)
     end
 
-    -- Agent-friendly high-level builders. These use native node placement.
-
-    if tool_name == "build_platform" then
-        return build_platform(args, player_name)
-    elseif tool_name == "build_hut" then
-        return build_hut(args, player_name)
-    elseif tool_name == "build_house" then
-        return build_house(args, player_name)
-    elseif tool_name == "build_tower" then
-        return build_tower(args, player_name)
+    if REMOVED_SEMANTIC_BUILDERS[tool_name] or tool_name == "build_structure" then
+        return {ok=false, message="unknown tool: " .. tostring(tool_name)}
     end
 
     if not worldedit then
-        return {ok=false, message="worldedit_agent: WorldEdit bridge is not loaded; use print_plan/print_nodes or high-level builders"}
+        return {ok=false, message="worldedit_agent: WorldEdit bridge is not loaded; use print_plan"}
     end
 
     -- ── Selection ────────────────────────────────────────────
@@ -997,20 +1061,13 @@ end
 
 local TOOLS = {
     -- Native node-printer tools: preferred for model-generated structures
-    { name="print_plan", description="Validate and place a batch of nodes, rows, and boxes. Coordinates are relative to player position unless absolute=true.",
-      parameters={nodes="array optional", rows="array optional", boxes="array optional", origin="pos optional", absolute="boolean optional", max_nodes="integer optional"} },
+    { name="print_plan", description="Validate and place native node geometry primitives. Coordinates are relative to player position unless absolute=true.",
+      parameters={nodes="array optional", lines="array optional", planes="array optional", volumes="array optional", origin="player|string|pos optional", absolute="boolean optional", max_nodes="integer optional"} },
     { name="preview_plan", description="Validate a print_plan without writing nodes.",
-      parameters={nodes="array optional", rows="array optional", boxes="array optional", origin="pos optional", absolute="boolean optional", max_nodes="integer optional"} },
-    -- High-level builders: preferred for natural-language building tasks
-    { name="build_hut",      description="Build a small centered hut at the player's position. Preferred for simple hut requests.",
-      parameters={width="integer optional", length="integer optional", height="integer optional", wall="node optional", floor="node optional", roof="node optional"} },
-    { name="build_house",    description="Build a centered house with floor, walls, roof, windows, door opening and cleared interior.",
-      parameters={width="integer optional", length="integer optional", height="integer optional", wall="node optional", floor="node optional", roof="node optional", window="node optional"} },
-    { name="build_tower",    description="Build a centered hollow round tower with windows.",
-      parameters={radius="integer optional", height="integer optional", wall="node optional", floor="node optional", window="node optional"} },
-    { name="build_platform", description="Build a centered flat platform at the player's position.",
-      parameters={width="integer optional", length="integer optional", node="node optional"} },
-    -- Selection
+      parameters={nodes="array optional", lines="array optional", planes="array optional", volumes="array optional", origin="player|string|pos optional", absolute="boolean optional", max_nodes="integer optional"} },
+    { name="get_node", description="Inspect one node at an explicit position.",
+      parameters={pos="pos table, or x/y/z numeric fields"} },
+    -- Experimental WorldEdit bridge compatibility
     { name="set_pos1",      description="Set WorldEdit pos1 to absolute coords. Defaults to player pos if no x/y/z given.",
       parameters={x="integer (optional)", y="integer (optional)", z="integer (optional)"} },
     { name="set_pos2",      description="Set WorldEdit pos2 to absolute coords. Defaults to player pos if no x/y/z given.",
@@ -1133,9 +1190,6 @@ local function do_register()
         get_node = function(pos)
             return compat_get_node(pos)
         end,
-        build_structure = function(args, player_name)
-            return compat_build_structure(args or {}, player_name)
-        end,
         get_context = get_context,
         snapshot = snapshot_hook,
         restore = restore_hook,
@@ -1146,42 +1200,112 @@ local function do_register()
         root.context.register_section({
             id = "skills.worldedit_agent",
             title = "Node Printer skill manual",
-            summary = "Native node batch printing plus WorldEdit bridge compatibility.",
+            summary = "Native node/line/plane/volume geometry printing plus WorldEdit bridge compatibility.",
             tags = {"skill", "worldedit", "node_printer", "building", "nodes", "regions"},
             required_priv = "llm_agent",
             provider = function(player_name)
                 return table.concat({
                     get_context(player_name),
                     "",
+                    "Node Printer builds generated structures from explicit Lua geometry plans.",
+                    "Generated structures must be composed from nodes, lines, planes, and volumes by the agent.",
+                    "Default placement is player-anchored: omit origin or set origin=\"player\" to build at the current player position.",
+                    "Use absolute=true only when every coordinate is an intentional world coordinate.",
+                    "Do not set origin={x=0,y=0,z=0} for player-local builds; that means world origin and is rejected unless absolute=true.",
+                    "A single solid volume is only a literal block, not a house, tower, castle or other named building.",
+                    "For named buildings, compose visible parts: floor, separate walls or hollow shell, door/window air nodes, roof, and requested features.",
+                    "For castles, include at least walls, an entrance, and either four corner towers or battlements.",
+                    "Keep lua_action blocks concise; use small helper functions or loops to build repeated plan entries instead of long comments or huge literal tables.",
+                    "",
                     "Canonical invocation:",
                     "  llm_connect.skills.worldedit_agent.run(\"<tool>\", args, player_name)",
                     "Do not call direct helpers such as llm_connect.skills.worldedit_agent.print_plan(...). Do not use nested :run() calls.",
                     "Do not omit player_name. Do not pass player_name as the first argument.",
-                    "Always check the result before reporting success:",
-                    "  local res = llm_connect.skills.worldedit_agent.run(\"print_plan\", {boxes={{x=0,y=0,z=0,width=3,height=2,length=3,node=\"default:stone\"}}}, player_name)",
-                    "  if not (res and res.ok) then return {done=false, continue=true, message=res and res.message or \"worldedit_agent failed\"} end",
-                    "  return {done=true, message=res.message or \"Done\"}",
                     "",
-                    "Stable native node-printer tools:",
+                    "Stable construction tools:",
                     "  \"preview_plan\": validate a plan without writing nodes.",
-                    "  \"print_plan\": place nodes/rows/boxes. Coordinates are relative to the player's current integer position unless absolute=true or origin={x=...,y=...,z=...} is provided.",
-                    "  \"build_platform\": build a centered flat platform.",
-                    "  \"build_hut\": build a small centered hut.",
-                    "  \"build_house\": build a centered house.",
+                    "  \"print_plan\": execute an explicit node/line/plane/volume plan and verify writes by reading nodes back.",
                     "  \"get_node\": read one node at {pos={x=...,y=...,z=...}}.",
                     "",
-                    "Examples:",
-                    "  llm_connect.skills.worldedit_agent.run(\"preview_plan\", {boxes={{x=0,y=0,z=0,width=3,height=3,length=3,node=\"default:stone\"}}}, player_name)",
-                    "  llm_connect.skills.worldedit_agent.run(\"print_plan\", {",
-                    "    nodes = {{x=0,y=1,z=0,node=\"default:glass\"}},",
-                    "    rows = {{x=-2,y=0,z=0,axis=\"x\",length=5,node=\"default:wood\"}},",
-                    "    boxes = {{x=-3,y=0,z=-3,width=7,height=1,length=7,node=\"default:stone\"}},",
-                    "  }, player_name)",
-                    "  llm_connect.skills.worldedit_agent.run(\"build_platform\", {width=3,length=3,node=\"default:stone\"}, player_name)",
-                    "  llm_connect.skills.worldedit_agent.run(\"build_hut\", {}, player_name)",
-                    "  llm_connect.skills.worldedit_agent.run(\"build_house\", {width=7,length=7,height=4,wall=\"default:wood\",floor=\"default:stone\",roof=\"default:cobble\"}, player_name)",
+                    "For natural-language construction requests:",
+                    "  1. Translate the requested object into explicit nodes, lines, planes and volumes.",
+                    "  2. Call preview_plan first.",
+                    "  3. Check preview.ok and inspect preview.data.origin/min/max to confirm the structure is anchored near the player.",
+                    "  4. If preview succeeds and execution is still required, return done=false and continue=true so the next agent iteration can perform print_plan.",
+                    "  5. Do not search for semantic builders such as build_house, build_hut, build_tower or build_platform; they are intentionally not part of this skill.",
+                    "  6. Never satisfy a named building request with one solid volume; if preview/print rejects this, rewrite the plan with multiple parts.",
+                    "  7. Keep the generated Lua short and complete; one closed lua_action block is better than a verbose unfinished plan.",
+                    "",
+                    "Plan schema:",
+                    "  {",
+                    "    origin = \"player\", -- optional default; omit for player-local builds",
+                    "    absolute = false,   -- optional default; true means world coordinates",
+                    "    nodes = {",
+                    "      {at={x=0,y=1,z=0}, node=\"default:glass\"}",
+                    "    },",
+                    "    lines = {",
+                    "      {from={x=-3,y=1,z=-3}, dir={x=1,y=0,z=0}, length=7, node=\"default:wood\"}",
+                    "    },",
+                    "    planes = {",
+                    "      {from={x=-3,y=0,z=-3}, dir1={x=1,y=0,z=0}, dir2={x=0,y=0,z=1}, size1=7, size2=7, node=\"default:stone\"}",
+                    "    },",
+                    "    volumes = {",
+                    "      {from={x=-3,y=1,z=-3}, dir1={x=1,y=0,z=0}, dir2={x=0,y=1,z=0}, dir3={x=0,y=0,z=1}, size1=7, size2=4, size3=7, node=\"default:wood\", hollow=true}",
+                    "    },",
+                    "    max_nodes = 20000",
+                    "  }",
+                    "",
+                    "Primitive meanings:",
+                    "  node: one position (0D).",
+                    "  line: from + dir + length (1D).",
+                    "  plane: from + dir1/dir2 + size1/size2 (2D).",
+                    "  volume: from + dir1/dir2/dir3 + size1/size2/size3 (3D).",
+                    "Direction vectors make verticality explicit; for vertical walls use one direction with y=1.",
+                    "For simple player-local buildings, omit origin entirely and use relative coordinates around {x=0,y=0,z=0}.",
+                    "A single solid volume larger than 64 nodes is rejected unless allow_solid_volume=true is set for an explicit literal cube/block request.",
+                    "",
+                    "Primitive plan-composition example:",
+                    "  local plan = {",
+                    "      planes = {",
+                    "          {from={x=-3,y=0,z=-3}, dir1={x=1,y=0,z=0}, dir2={x=0,y=0,z=1}, size1=7, size2=7, node=\"default:stone\"},",
+                    "          {from={x=-4,y=5,z=-4}, dir1={x=1,y=0,z=0}, dir2={x=0,y=0,z=1}, size1=9, size2=9, node=\"default:cobble\"},",
+                    "      },",
+                    "      volumes = {",
+                    "          {from={x=-3,y=1,z=-3}, dir1={x=1,y=0,z=0}, dir2={x=0,y=1,z=0}, dir3={x=0,y=0,z=1}, size1=7, size2=4, size3=7, node=\"default:wood\", hollow=true},",
+                    "      },",
+                    "      nodes = {",
+                    "          {at={x=0,  y=1, z=-3}, node=\"air\"},",
+                    "          {at={x=0,  y=2, z=-3}, node=\"air\"},",
+                    "          {at={x=-2, y=2, z=-3}, node=\"default:glass\"},",
+                    "          {at={x=2,  y=2, z=-3}, node=\"default:glass\"},",
+                    "      },",
+                    "  }",
+                    "",
+                    "  local preview = llm_connect.skills.worldedit_agent.run(\"preview_plan\", plan, player_name)",
+                    "  if not (preview and preview.ok) then",
+                    "      return {",
+                    "          done = false,",
+                    "          continue = true,",
+                    "          message = preview and preview.message or \"Node Printer preview failed\"",
+                    "      }",
+                    "  end",
+                    "",
+                    "  return {",
+                    "      done = false,",
+                    "      continue = true,",
+                    "      message = \"Primitive construction plan validated; execute it with print_plan in the next step.\"",
+                    "  }",
+                    "",
+                    "On the following iteration, execute the same explicit plan with print_plan after checking that execution is still required.",
+                    "print_plan returns data.origin/min/max and fails with ok=false if node writes cannot be verified.",
+                    "",
+                    "Simple castle composition pattern:",
+                    "  Use a floor plane, four wall volumes or planes, one or more air nodes for an entrance, and four hollow corner tower volumes.",
+                    "  Add battlements with short lines or nodes along the top edges.",
+                    "  Keep each part explicit; do not use one 5x5x5 solid cobble volume and call it a castle.",
                     "",
                     "WorldEdit and WorldEditAdditions bridge tools are experimental/compatibility paths and are intentionally not part of this stable agent-facing surface.",
+                    "print_nodes may exist as a compatibility alias for print_plan, but print_plan is canonical.",
                     "Use max_nodes to cap write volume for large generated plans.",
                     "",
                     "Safe common materials:",
@@ -1212,7 +1336,7 @@ local function do_register()
         id          = "worldedit_agent",
         label       = "Node Printer",
         version     = "1.3.0-dev",
-        description = "Lua-first node printer for batch structures, high-level builders, and WorldEdit bridge compatibility.",
+        description = "Lua-first node printer for explicit primitive structure plans with optional WorldEdit bridge compatibility.",
         required_priv = "llm_agent",
         default_enabled = false,
         available = function()
@@ -1223,7 +1347,7 @@ local function do_register()
         get_context = get_context,
         snapshot_hook = snapshot_hook,
         restore_hook  = restore_hook,
-        tool_count = 6,
+        tool_count = 3,
     })
 end
 

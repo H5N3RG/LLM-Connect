@@ -651,3 +651,136 @@ Related subsystem/files:
 - `skills/registry.lua`
 - `skills/command_agent/command_agent.lua`
 - `skills/worldedit_agent/worldedit_agent.lua`
+
+## 18. Native Node Printer Geometry Primitives
+
+Required config/settings:
+
+- Player has `llm`, `llm_agent`, `worldedit_agent`.
+- LLM provider configured.
+- Recommended evidence settings:
+  `llm_live_trace_chat = true`,
+  `llm_live_trace_show_lua = true`,
+  `llm_trace_prompt_log = true`.
+
+In-game prompt/action:
+
+```text
+/llm lade die node printer dokumentation und baue danach ein kleines holzhaus hier
+```
+
+Expected trace/log evidence:
+
+- The retrieved node-printer context describes the native primitives
+  `nodes`, `lines`, `planes`, and `volumes`.
+- The build plan uses `preview_plan` first and `print_plan` only after a
+  successful preview.
+- The tool arguments use native primitives such as `planes`, `volumes`, and
+  `nodes`; no generated plan should rely on `rows`, `boxes`, or `build_*`.
+- A named building request must not be satisfied by one solid volume. A castle
+  plan should include separate walls, an entrance, and towers or battlements.
+- For a local build request, the plan omits `origin` or sets
+  `origin = "player"`.
+- The plan must not use `origin = {x = 0, y = 0, z = 0}` with
+  `absolute = false`.
+- The preview result includes `data.origin`, `data.min`, and `data.max`, and
+  those bounds are near the current player position.
+- The final `print_plan` call returns success and a physical structure appears
+  at or near the current player position.
+- `debug.txt` contains a `worldedit_agent` line similar to
+  `print_plan verified ... origin=... min=... max=...`.
+- If no physical node is written, `print_plan` must return `ok=false` with a
+  write-verification failure instead of claiming success.
+- If the model attempts one large solid `volumes` cuboid and calls it a castle,
+  `preview_plan` or `print_plan` should return `ok=false` and the next agent
+  iteration should rewrite the plan with multiple primitive parts.
+
+Additional verticality prompt/action:
+
+```text
+/llm baue mit dem node printer eine senkrechte glaslinie direkt hier an meiner position
+```
+
+Expected trace/log evidence:
+
+- The plan uses a `lines` primitive with an explicit vertical direction vector,
+  for example `dir = {x = 0, y = 1, z = 0}` or `dir = "up"`.
+- The preview bounds show a vertical extent on the `y` axis.
+- The final placement appears at or near the current player position.
+
+Direct API regression check:
+
+```lua
+local res = llm_connect.skills.worldedit_agent.run("preview_plan", {
+  origin = {x = 0, y = 0, z = 0},
+  absolute = false,
+  planes = {{
+    from = {x = 0, y = 0, z = 0},
+    dir1 = {x = 1, y = 0, z = 0},
+    dir2 = {x = 0, y = 0, z = 1},
+    size1 = 1,
+    size2 = 1,
+    node = "default:stone"
+  }}
+}, player_name)
+return {done = true, message = tostring(res.ok) .. " " .. tostring(res.message)}
+```
+
+Expected result:
+
+- `res.ok` is `false`.
+- The message states that `origin={x=0,y=0,z=0}` with `absolute=false` would
+  build at world origin and that player-local builds should omit `origin` or
+  use `origin="player"`.
+
+What failure means:
+
+- The model-facing node-printer contract is still ambiguous or too close to the
+  legacy rows/boxes representation.
+- Player-relative placement is not enforced consistently between prompt
+  context and engine validation.
+- The agent is treating successful interpretation or preview as task completion
+  without executing the interpreted plan.
+
+Related subsystem/files:
+
+- `skills/worldedit_agent/worldedit_agent.lua`
+- `agent/agent_context.lua`
+- `agent/agent_flow.lua`
+
+## 19. Truncated Lua Action Continuation
+
+Required config/settings:
+
+- Player has `llm`, `llm_agent`, and at least one active Lua-first skill.
+- Recommended evidence settings:
+  `llm_live_trace_chat = true`,
+  `llm_live_trace_show_lua = true`,
+  `llm_trace_prompt_log = true`.
+
+Failure scenario to watch for:
+
+- Provider returns `finish_reason="length"` while the response contains an
+  opening ```lua_action fence without a closing fence.
+- Parser reports `actions=0`.
+
+Expected trace/log evidence:
+
+- The run must not finish with `reason="no_continuation_requested"`.
+- `agent_flow` should schedule `truncated_action_retry`.
+- The next iteration should receive an action-history failure saying the
+  `lua_action` block was truncated and should retry with one concise complete
+  action block.
+- No incomplete Lua body should be executed.
+
+What failure means:
+
+- Parser/flow treated an incomplete hidden action as normal visible chat.
+- The agent stopped after planning text even though an imperative task was
+  still unresolved.
+
+Related subsystem/files:
+
+- `agent/parser_utils.lua`
+- `agent/agent_runtime.lua`
+- `agent/agent_flow.lua`

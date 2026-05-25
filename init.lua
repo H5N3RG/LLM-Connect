@@ -29,7 +29,8 @@
 --   15. main_gui.lua         — main UI (chat + agent panel)
 --   16. config_gui.lua       — settings UI including context-layer picker
 --   10. on_mods_loaded:
---       └ registry.discover_external() → load external addon mods
+--       └ registry.discover_external() → currently skipped; built-in skill
+--                                         gateways are loaded from skills/*/init.lua
 --   11. Main GUI and config GUI
 --   12. Register formspec handlers
 --   13. Load llm_startup.lua if present
@@ -282,10 +283,9 @@ local main_gui = gui_modules.main_gui
 local config_gui = gui_modules.config_gui
 
 -- ===========================================================================
--- 10. Load external addon mods (after mods_loaded)
---     At this point external mods have already called register() explicitly
---     (if they declared optional_depends = llm_connect).
---     discover_external() additionally scans for llm_connect_addon.lua files.
+-- 10. External skill discovery hook (after mods_loaded)
+--     Built-in structured skill gateways are loaded from skills/*/init.lua.
+--     External discovery is currently skipped by registry.discover_external().
 -- ===========================================================================
 
 core.register_on_mods_loaded(function()
