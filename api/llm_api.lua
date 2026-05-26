@@ -82,7 +82,7 @@ function M.reload_config()
     M.config.api_url = core.settings:get("llm_api_url") or ""
     M.config.model   = core.settings:get("llm_model")   or ""
 
-    M.config.max_tokens         = tonumber(core.settings:get("llm_max_tokens")) or 4000
+    M.config.max_tokens         = tonumber(core.settings:get("llm_max_tokens")) or 16000
     M.config.max_tokens_integer = core.settings:get_bool("llm_max_tokens_integer", true)
 
     M.config.temperature       = tonumber(core.settings:get("llm_temperature"))       or 0.7

@@ -784,3 +784,161 @@ Related subsystem/files:
 - `agent/parser_utils.lua`
 - `agent/agent_runtime.lua`
 - `agent/agent_flow.lua`
+
+## 20. Node Printer Voxel-CSG Surface Patches
+
+Required config/settings:
+
+- Player has `llm`, `llm_agent`.
+- `node_printer_preview` is attached to the player.
+- LLM provider configured.
+- Recommended evidence settings:
+  `llm_live_trace_chat = true`,
+  `llm_live_trace_show_lua = true`,
+  `llm_trace_prompt_log = true`.
+
+In-game prompt/action:
+
+```text
+/llm lade die node printer dokumentation und baue danach eine kleine steinhuette mit hohler schale, holzdach, zwei glas-inlays, einem eingang und einem farbigen streifen auf der rechten wand
+```
+
+Expected trace/log evidence:
+
+- The context load uses `skills.node_printer_preview`, `node_printer`, or another
+  registered alias that resolves to `skills.node_printer_preview`.
+- The build uses `llm_connect.skills.node_printer_preview.run("<tool>", args, player_name)`.
+- For this ordinary material request, the model may use common registered nodes
+  directly, such as `default:stone`, `default:wood`, `default:glass`, and
+  `default:brick`; it should not require `asset_search` before building.
+- The plan uses ordered voxel-CSG operations with `ops = {...}` and at least:
+  `solid`, `shell`, `cut`, and `paint`.
+- The plan uses `shape="patch"` for surface-relative features instead of
+  object-specific helpers. Expected examples:
+  - a `cut` patch on the front face for the entrance,
+  - `paint` patches on a face for glass inlays,
+  - a `paint` patch on another face for a decorative strip or panel.
+- The patch schema is surface-relative and mathematical:
+  `on={shape="box", at={x=...,y=...,z=...}, size={x=...,y=...,z=...}, face="front|back|left|right|top|bottom"}`,
+  `at={u=...,v=...}`, `size={u=...,v=...}`, and optional `depth=N`.
+- No generated plan should call object-specific helpers such as `set_door`,
+  `set_window`, `door`, `window`, `roof`, `build_house`, or `build_hut`.
+- `preview_build` succeeds before `print_build`, or the same action block checks
+  `preview_build` successfully before executing `print_build`.
+- `debug.txt` contains a `node_printer_preview` verification line similar to
+  `print_build verified ... origin=... min=... max=...`.
+- The final structure appears near the player position, with visible non-air
+  writes and at least one cut-through opening.
+
+Direct API regression check:
+
+```lua
+local shell = {x=-4, y=1, z=-3}
+local shell_size = {x=9, y=5, z=7}
+local build = {
+  anchor = "player",
+  ops = {
+    {op="solid", shape="box", at={x=-4,y=0,z=-3}, size={x=9,y=1,z=7}, node="default:stone"},
+    {op="shell", shape="box", at=shell, size=shell_size, node="default:stone"},
+    {op="solid", shape="box", at={x=-5,y=6,z=-4}, size={x=11,y=1,z=9}, node="default:wood"},
+    {op="cut", shape="patch", on={shape="box", at=shell, size=shell_size, face="front"}, at={u=4,v=0}, size={u=1,v=3}, depth=1},
+    {op="paint", shape="patch", on={shape="box", at=shell, size=shell_size, face="front"}, at={u=2,v=2}, size={u=1,v=1}, depth=1, node="default:glass"},
+    {op="paint", shape="patch", on={shape="box", at=shell, size=shell_size, face="right"}, at={u=2,v=2}, size={u=3,v=1}, depth=1, node="default:wood"},
+  },
+  max_nodes = 20000,
+}
+local res = llm_connect.skills.node_printer_preview.run("preview_build", build, player_name)
+return {done = true, message = tostring(res.ok) .. " " .. tostring(res.message)}
+```
+
+Expected result:
+
+- `res.ok` is `true`.
+- `res.data.operations` is `6`.
+- `res.data.materials` includes `default:stone`, `default:wood`,
+  `default:glass`, and `air`.
+- An equivalent `print_build` verifies all writes or returns `ok=false` with a
+  concrete verification failure.
+
+What failure means:
+
+- The manual did not make surface patches clear enough for the model.
+- Patch coordinate validation is accepting out-of-face writes or rejecting valid
+  face-local rectangles.
+- The model is falling back to object-specific helpers instead of universal CSG
+  operations.
+
+Related subsystem/files:
+
+- `skills/node_printer_preview/node_printer_preview.lua`
+
+## 21. Node Printer Optional Semantic Asset Search
+
+Required config/settings:
+
+- Player has `llm`, `llm_agent`.
+- `node_printer_preview` is attached to the player.
+- LLM provider configured.
+- Recommended evidence settings:
+  `llm_live_trace_chat = true`,
+  `llm_live_trace_show_lua = true`,
+  `llm_trace_prompt_log = true`.
+
+In-game prompt/action:
+
+```text
+/llm lade die node printer dokumentation und suche ein registriertes material fuer eine kupferne oder metallische zierleiste
+```
+
+Expected trace/log evidence:
+
+- The model calls `llm_connect.skills.node_printer_preview.run("asset_search", ...)`
+  only because the requested material is unusual or uncertain.
+- The search query is semantic. It may be a single string such as
+  `copper metal`, or a multi-string query such as
+  `queries={"copper", "metal"}`.
+- The response reports a returned registered node name instead of inventing a
+  node such as `default:copper_block` unless it appears in the results.
+
+Direct API regression check:
+
+```lua
+local search = llm_connect.skills.node_printer_preview.run("asset_search", {
+  queries = {"copper", "metal"},
+  limit = 8,
+}, player_name)
+if not (search and search.ok) then
+  return {done = true, message = search and search.message or "asset_search failed"}
+end
+local first = search.first or (search.data and search.data.results and search.data.results[1])
+return {
+  done = true,
+  message = "asset_search ok=" .. tostring(search.ok)
+      .. " count=" .. tostring(search.data and search.data.count)
+      .. " node=" .. tostring(search.node)
+      .. " first=" .. tostring(first and first.name),
+}
+```
+
+Expected result:
+
+- `search.ok` is `true`.
+- `search.data.count` is greater than `0` in a normal Minetest Game-compatible
+  world with default nodes.
+- Every returned result name exists in `core.registered_nodes`.
+- `search.node`, `search.first`, `search.results`, `search.matches`, and
+  `search.data.results` all expose the same first/result list semantics for
+  model-friendly extraction.
+- If the result is used in a follow-up build, the returned node name passes
+  `preview_build` material validation.
+
+What failure means:
+
+- The optional material search is broken for unusual material requests.
+- `asset_search` is returning unavailable nodes or overly broad/noisy matches.
+- The model is still guessing unusual materials instead of grounding them in the
+  active node registry.
+
+Related subsystem/files:
+
+- `skills/node_printer_preview/node_printer_preview.lua`

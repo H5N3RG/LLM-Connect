@@ -147,6 +147,14 @@ function M.unregister_section(id)
     return registry_call("unregister_section", id)
 end
 
+function M.register_alias(alias, id)
+    return registry_call("register_alias", alias, id)
+end
+
+function M.register_aliases(map)
+    return registry_call("register_aliases", map)
+end
+
 local function basic_call(method, player_name)
     local fn = M.basic_context and M.basic_context[method]
     if type(fn) == "function" then

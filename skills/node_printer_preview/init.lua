@@ -3,4 +3,4 @@
 local core = core
 local modpath = core.get_modpath(core.get_current_modname())
 
-return dofile(modpath .. "/skills/worldedit_agent/worldedit_agent.lua")
+return dofile(modpath .. "/skills/node_printer_preview/node_printer_preview.lua")
