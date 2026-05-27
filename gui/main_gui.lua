@@ -607,10 +607,11 @@ function M.show_skills(name)
                 core.colorize("#888888", core.formspec_escape(desc))))
 
             -- Inline meta row lives inside the card instead of floating outside it
-            local origin_tag = (sorigin == "extern" and "ext" or "int")
+            local is_external = sorigin == "external" or sorigin == "extern"
+            local origin_tag = (is_external and "ext" or "int")
             local meta = core.colorize("#6f6f6f", "v" .. sversion)
                 .. "  " .. core.colorize("#666688", tostring(stool_count) .. " tools")
-                .. "  " .. core.colorize(sorigin == "extern" and "#4a8844" or "#444488", "[" .. origin_tag .. "]")
+                .. "  " .. core.colorize(is_external and "#4a8844" or "#444488", "[" .. origin_tag .. "]")
             if not s.available then
                 meta = meta .. "  " .. core.colorize("#aa4422", "dep")
             end

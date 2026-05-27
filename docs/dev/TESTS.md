@@ -872,6 +872,348 @@ Related subsystem/files:
 
 - `skills/node_printer_preview/node_printer_preview.lua`
 
+## Block 1 - External Skill ABI / Skill-Module Refactor
+
+These tests validate the external skill ABI introduced for LLM-Connect 1.2.0.
+External skills are normal Luanti mods with `depends = llm_connect`; LLM-Connect
+must not scan or `dofile()` third-party skill code.
+
+### 1. Core-only startup regression test
+
+Purpose:
+
+Verify that LLM-Connect still starts with only internal skills enabled.
+
+Setup:
+
+- Do not enable the fixture mod.
+- Player has `llm_root`.
+
+Steps:
+
+```text
+/llm_health
+/llm_skill_list singleplayer
+```
+
+Expected result:
+
+- Startup succeeds.
+- Internal skills are present: `command_agent`, `mapgen_painter`,
+  `node_printer_preview`.
+- No `external_skill_probe` is listed.
+
+Relevant log evidence:
+
+- `[registry] Lua-first skill registered: command_agent (internal)`
+- `[registry] Lua-first skill registered: mapgen_painter (internal)`
+- `[registry] Lua-first skill registered: node_printer_preview (internal)`
+- `[registry] external skill validation report: discovered=0 valid=0 invalid=0`
+- Ready log includes `3 Lua-first skill(s) registered` and
+  `external skills: 0 discovered / 0 valid / 0 invalid`.
+
+Cleanup/revert instructions:
+
+- None.
+
+### 2. External fixture activation/loading
+
+Purpose:
+
+Verify that the fixture loads through Luanti's normal mod lifecycle.
+
+Setup:
+
+- Use a temporary world-local symlink so the fixture is a normal worldmod.
+- Replace `<worldpath>` with the active Luanti world path.
+
+```bash
+mkdir -p <worldpath>/worldmods
+ln -s /home/heisenberg/codex/LLM-Connect/tests/fixtures/llm_connect_external_skill_probe <worldpath>/worldmods/llm_connect_external_skill_probe
+```
+
+Steps:
+
+- Restart the Luanti world.
+- Run:
+
+```text
+/llm_skill_list singleplayer
+```
+
+Expected result:
+
+- The fixture mod loads after `llm_connect`.
+- `external_skill_probe` appears in the skill list.
+- It is `DETACHED` by default.
+
+Relevant log evidence:
+
+- `[registry] Lua-first skill registered: external_skill_probe (external)`
+- `[registry] external skill validation report: discovered=1 valid=1 invalid=0`
+- Ready log includes `external skills: 1 discovered / 1 valid / 0 invalid`.
+
+Cleanup/revert instructions:
+
+```bash
+rm <worldpath>/worldmods/llm_connect_external_skill_probe
+```
+
+Restart the world after cleanup.
+
+### 3. Registry provenance/report verification
+
+Purpose:
+
+Verify that external provenance is recorded and reported.
+
+Setup:
+
+- Fixture is active as in test 2.
+- Player has `llm_root` and `llm_dev` if using the IDE to inspect Lua tables.
+
+Steps:
+
+- Run `/llm_skill_list singleplayer`.
+- Optionally inspect through root/dev Lua:
+
+```lua
+return llm_connect.registry.external_skill_report
+```
+
+Expected result:
+
+- `origin == "external"` for `external_skill_probe`.
+- `provider_mod == "llm_connect_external_skill_probe"`.
+- Report contains one valid external skill and no errors.
+
+Relevant log evidence:
+
+- `external_skill_probe (external)`
+- `provider_mod` appears in the report table.
+- `discovered=1 valid=1 invalid=0`.
+
+Cleanup/revert instructions:
+
+- Keep the fixture enabled for tests 4 and 5.
+
+### 4. Default-disabled / no-auto-attach verification
+
+Purpose:
+
+Verify that external registration does not automatically attach or enable the
+skill for an agent.
+
+Setup:
+
+- Fixture is active.
+- Player has `llm_root`.
+
+Steps:
+
+```text
+/llm_skill_list singleplayer
+```
+
+Expected result:
+
+- `external_skill_probe` is listed as `DETACHED`.
+- It is not included in active agent skill context until explicitly attached.
+
+Relevant log evidence:
+
+- Skill list row shows `DETACHED external_skill_probe`.
+- Agent logs, if run without attachment, do not show the probe as active.
+
+Cleanup/revert instructions:
+
+- None.
+
+### 5. Explicit attach + canonical run("ping") verification
+
+Purpose:
+
+Verify that explicit attachment permits the canonical runtime ABI.
+
+Setup:
+
+- Fixture is active.
+- Player has `llm_root`, `llm_dev`, and `llm_agent`.
+
+Steps:
+
+```text
+/llm_skill_attach singleplayer external_skill_probe on
+/llm_skill_list singleplayer
+```
+
+Then run this from root/dev Lua or an equivalent trusted test path:
+
+```lua
+local res = llm_connect.skills.external_skill_probe.run("ping", {}, "singleplayer")
+return res
+```
+
+Expected result:
+
+- Skill list shows `ATTACHED external_skill_probe`.
+- Runtime result has `ok=true`, `success=true`, and message
+  `External skill probe pong.`
+
+Relevant log evidence:
+
+- No stacktrace.
+- Optional returned table includes
+  `provider_mod = "llm_connect_external_skill_probe"`.
+
+Cleanup/revert instructions:
+
+```text
+/llm_skill_attach singleplayer external_skill_probe off
+```
+
+### 6. Negative registration without provider_mod
+
+Purpose:
+
+Verify that external skills without `provider_mod` are rejected without a
+partial runtime mount.
+
+Setup:
+
+- Create a temporary test worldmod named
+  `llm_connect_external_skill_missing_provider`.
+- Its `mod.conf` must include `depends = llm_connect`.
+- Its `init.lua` should call:
+
+```lua
+local ok, err = llm_connect.registry.register_skill({
+    id = "external_missing_provider_probe",
+    label = "Missing Provider Probe",
+    origin = "external",
+    api = {
+        run = function()
+            return { ok = true, success = true, message = "should not mount" }
+        end,
+    },
+})
+core.log("action", "[missing_provider_probe] ok=" .. tostring(ok) .. " err=" .. tostring(err))
+```
+
+Steps:
+
+- Restart the Luanti world.
+- Inspect logs and `/llm_skill_list singleplayer`.
+
+Expected result:
+
+- Registration returns `false`.
+- Error says `external skill requires provider_mod`.
+- `external_missing_provider_probe` is not listed.
+- `llm_connect.skills.external_missing_provider_probe` is nil.
+
+Relevant log evidence:
+
+- `ok=false err=external skill requires provider_mod`
+- No successful registry line for `external_missing_provider_probe`.
+
+Cleanup/revert instructions:
+
+- Remove the temporary worldmod directory or symlink.
+- Restart the world.
+
+### 7. Collision attempt against an internal skill ID
+
+Purpose:
+
+Verify that an external skill cannot overwrite an internal skill ID.
+
+Setup:
+
+- Create a temporary test worldmod named
+  `llm_connect_external_skill_collision_probe`.
+- Its `mod.conf` must include `depends = llm_connect`.
+- Its `init.lua` should call:
+
+```lua
+local ok, err = llm_connect.registry.register_skill({
+    id = "command_agent",
+    label = "Collision Probe",
+    origin = "external",
+    provider_mod = core.get_current_modname(),
+    api = {
+        run = function()
+            return { ok = true, success = true, message = "should not mount" }
+        end,
+    },
+})
+core.log("action", "[collision_probe] ok=" .. tostring(ok) .. " err=" .. tostring(err))
+```
+
+Steps:
+
+- Restart the Luanti world.
+- Run `/llm_skill_list singleplayer`.
+- Optionally call the normal command agent time/list tool to confirm it still
+  behaves as the internal skill.
+
+Expected result:
+
+- Registration returns `false`.
+- Error says the external skill cannot overwrite an internal skill ID.
+- `command_agent` remains internal.
+
+Relevant log evidence:
+
+- `ok=false err=external skill 'command_agent' cannot overwrite internal skill id`
+- Skill list still shows the real `command_agent`.
+
+Cleanup/revert instructions:
+
+- Remove the temporary collision worldmod.
+- Restart the world.
+
+### 8. Startup/error log evaluation
+
+Purpose:
+
+Evaluate the complete log evidence after the live tests.
+
+Setup:
+
+- Run the tests above.
+- Keep the latest debug/log text files available under
+  `/home/heisenberg/codex/*.txt`.
+
+Steps:
+
+- Ask Codex to read the newest relevant lower portions of
+  `/home/heisenberg/codex/*.txt`.
+
+Expected result:
+
+- Internal skills still load.
+- External fixture registers successfully.
+- `origin == "external"` and `provider_mod` are evidenced.
+- Structured report works.
+- External fixture is not automatically attached.
+- Explicit attach permits canonical `run("ping")`.
+- Missing `provider_mod` registration is rejected.
+- Internal-ID collision is rejected.
+- No unexpected stacktrace or startup regression appears.
+
+Relevant log evidence:
+
+- Registry registration lines.
+- External validation report lines.
+- Chat command output evidence where available.
+- Returned Lua tables from the ping/report checks where available.
+
+Cleanup/revert instructions:
+
+- Remove all temporary external test worldmods.
+- Restart the world and rerun the core-only startup regression test.
+
 ## 21. Node Printer Optional Semantic Asset Search
 
 Required config/settings:

@@ -76,12 +76,14 @@ end
 
 function M.health()
     local info = M.internal_skill_load or (M.registry and M.registry.internal_skill_load) or {}
+    local external = M.external_skill_report or (M.registry and M.registry.external_skill_report) or {}
     return {
         ok = (info.failed or 0) == 0,
         loaded = info.loaded or 0,
         refreshed = info.refreshed or 0,
         failed = info.failed or 0,
         results = info.results or {},
+        external = external,
     }
 end
 
@@ -91,7 +93,9 @@ function M.is_available(id)
 end
 
 function M.discover_external()
-    return registry_call("discover_external", nil)
+    local report = registry_call("discover_external", nil)
+    M.external_skill_report = report or (M.registry and M.registry.external_skill_report) or nil
+    return M.external_skill_report
 end
 
 function M.register_skill(def)

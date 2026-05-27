@@ -29,8 +29,8 @@
 --   15. main_gui.lua         — main UI (chat + agent panel)
 --   16. config_gui.lua       — settings UI including context-layer picker
 --   10. on_mods_loaded:
---       └ registry.discover_external() → currently skipped; built-in skill
---                                         gateways are loaded from skills/*/init.lua
+--       └ registry.discover_external() → validate/report external skills that
+--                                         already self-registered as Luanti mods
 --   11. Main GUI and config GUI
 --   12. Register formspec handlers
 --   13. Load llm_startup.lua if present
@@ -283,21 +283,28 @@ local main_gui = gui_modules.main_gui
 local config_gui = gui_modules.config_gui
 
 -- ===========================================================================
--- 10. External skill discovery hook (after mods_loaded)
---     Built-in structured skill gateways are loaded from skills/*/init.lua.
---     External discovery is currently skipped by registry.discover_external().
+-- 10. External skill validation hook (after mods_loaded)
+--     External skills are normal Luanti mods with depends=llm_connect. They
+--     self-register through llm_connect.registry; this hook only reports on
+--     already registered external skills and never loads third-party code.
 -- ===========================================================================
 
 core.register_on_mods_loaded(function()
+    local external_report
     if registry and type(registry.discover_external) == "function" then
-        local ok, err = pcall(registry.discover_external)
+        local ok, report_or_err = pcall(registry.discover_external)
         if not ok then
-            mark_failed("skills.discover_external", err, { fatal = false })
+            mark_failed("skills.discover_external", report_or_err, { fatal = false })
+        else
+            external_report = report_or_err
         end
     end
     core.log("action", string.format(
-        "[llm_connect] ready — %d Lua-first skill(s) registered",
-        (function() local n=0; for _ in pairs((registry and registry.skills) or {}) do n=n+1 end; return n end)()))
+        "[llm_connect] ready — %d Lua-first skill(s) registered, external skills: %d discovered / %d valid / %d invalid",
+        (function() local n=0; for _ in pairs((registry and registry.skills) or {}) do n=n+1 end; return n end)(),
+        tonumber(external_report and external_report.discovered) or 0,
+        tonumber(external_report and external_report.valid) or 0,
+        tonumber(external_report and external_report.invalid) or 0))
 end)
 
 -- ===========================================================================

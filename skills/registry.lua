@@ -21,6 +21,13 @@ M.protocol = "lua-first"
 M.skills = M.skills or {}
 M.context_providers = M.context_providers or {}
 M.loaded_skill_gateways = M.loaded_skill_gateways or {}
+M.external_skill_report = M.external_skill_report or {
+    discovered = 0,
+    valid = 0,
+    invalid = 0,
+    skills = {},
+    errors = {},
+}
 
 local function trim(s)
     s = tostring(s or "")
@@ -55,6 +62,70 @@ local function shallow_copy(t)
     return out
 end
 
+local function normalize_origin(origin)
+    origin = trim(origin or "internal")
+    if origin == "extern" then origin = "external" end
+    if origin == "" then origin = "internal" end
+    if origin ~= "internal" and origin ~= "external" then
+        return nil, "invalid origin: " .. tostring(origin)
+    end
+    return origin
+end
+
+local function mounted_skill_namespace()
+    local root = rawget(_G, "llm_connect")
+    if type(root) ~= "table" then
+        root = {}
+        rawset(_G, "llm_connect", root)
+    end
+    if type(root.skills) ~= "table" then root.skills = {} end
+    return root.skills
+end
+
+local function validate_skill_api(id, api, required)
+    if api == nil then
+        if required then return false, "external skill requires api table" end
+        return true
+    end
+    if type(api) ~= "table" then
+        return false, "skill api for " .. tostring(id) .. " must be a table"
+    end
+    if type(api.run) ~= "function" then
+        return false, "skill api for " .. tostring(id) .. " requires run(tool_name, args, player_name)"
+    end
+    return true
+end
+
+local function collision_error(id, existing, skill)
+    if not existing then return nil end
+
+    local existing_origin = existing.origin or "internal"
+    local new_origin = skill.origin or "internal"
+    if existing_origin == "extern" then existing_origin = "external" end
+    if new_origin == "extern" then new_origin = "external" end
+
+    if existing_origin == "internal" and new_origin == "external" then
+        return "external skill '" .. id .. "' cannot overwrite internal skill id"
+    end
+    if existing_origin == "external" and new_origin == "internal" then
+        return "internal skill '" .. id .. "' cannot overwrite external provider skill"
+    end
+    if existing_origin == "external" and new_origin == "external" then
+        local existing_provider = trim(existing.provider_mod or "")
+        local new_provider = trim(skill.provider_mod or "")
+        if existing_provider ~= new_provider then
+            return "external skill '" .. id .. "' already registered by provider_mod '" .. existing_provider .. "'"
+        end
+    end
+    return nil
+end
+
+local function mount_skill_api(id, api)
+    if api == nil then return true end
+    mounted_skill_namespace()[id] = api
+    return true
+end
+
 local function is_skill_available(skill)
     if not skill or skill.enabled == false then return false end
     if type(skill.available) == "function" then
@@ -72,6 +143,17 @@ function M.register_skill(def)
     if type(def) ~= "table" then return false, "skill definition must be a table" end
     local id, err = normalize_id(def.id or def.name)
     if not id then return false, err end
+
+    local origin, origin_err = normalize_origin(def.origin)
+    if not origin then return false, origin_err end
+    local provider_mod = trim(def.provider_mod or "")
+    if origin == "external" and provider_mod == "" then
+        return false, "external skill requires provider_mod"
+    end
+
+    local api_ok, api_err = validate_skill_api(id, def.api, origin == "external")
+    if not api_ok then return false, api_err end
+
     local existed = M.skills[id] ~= nil
 
     local skill = shallow_copy(def)
@@ -87,9 +169,20 @@ function M.register_skill(def)
     skill.enabled = skill.enabled ~= false
     if skill.available == nil then skill.available = true end
     skill.default_enabled = skill.default_enabled == true
-    skill.origin = skill.origin or "internal"
+    skill.origin = origin
+    if provider_mod ~= "" then skill.provider_mod = provider_mod end
+    skill.provider_version = trim(skill.provider_version or "")
+    if skill.provider_version == "" then skill.provider_version = nil end
+    skill.source = trim(skill.source or "")
+    if skill.source == "" then skill.source = nil end
+    skill.homepage = trim(skill.homepage or "")
+    if skill.homepage == "" then skill.homepage = nil end
     skill.category = skill.category or "skill"
 
+    local collision = collision_error(id, M.skills[id], skill)
+    if collision then return false, collision end
+
+    mount_skill_api(id, skill.api)
     M.skills[id] = skill
     if type(M.current_skill_load) == "table" then
         local load = M.current_skill_load
@@ -103,15 +196,20 @@ function M.register_skill(def)
             load.new_ids[#load.new_ids + 1] = id
         end
     end
-    core.log("action", "[registry] Lua-first skill registered: " .. id)
+    core.log("action", "[registry] Lua-first skill registered: " .. id .. " (" .. skill.origin .. ")")
     return true, skill
 end
 
 function M.unregister_skill(id)
     id = normalize_id(id)
     if not id then return false, "missing id" end
-    if not M.skills[id] then return false, "unknown skill: " .. id end
+    local skill = M.skills[id]
+    if not skill then return false, "unknown skill: " .. id end
     M.skills[id] = nil
+    if skill.origin == "external" then
+        local runtime = mounted_skill_namespace()
+        if runtime[id] == skill.api then runtime[id] = nil end
+    end
     return true
 end
 
@@ -298,6 +396,8 @@ function M.get_status(player_name)
             required_priv = required,
             version = skill.version or "0.1.0",
             origin = skill.origin or "internal",
+            provider_mod = skill.provider_mod,
+            provider_version = skill.provider_version,
             category = skill.category or "skill",
         }
     end
@@ -447,8 +547,62 @@ function M.load_internal()
 end
 
 function M.discover_external()
-    core.log("action", "[registry] external skill discovery skipped — structured skill gateways are loaded from skills/*/init.lua")
-    return 0
+    local report = {
+        discovered = 0,
+        valid = 0,
+        invalid = 0,
+        skills = {},
+        errors = {},
+    }
+    local runtime = mounted_skill_namespace()
+
+    for id, skill in pairs(M.skills) do
+        if skill and skill.origin == "external" then
+            report.discovered = report.discovered + 1
+            local item = {
+                id = id,
+                origin = skill.origin,
+                provider_mod = skill.provider_mod,
+                provider_version = skill.provider_version,
+                version = skill.version,
+                ok = true,
+            }
+            local errors = {}
+            if trim(skill.provider_mod or "") == "" then
+                errors[#errors + 1] = "missing provider_mod"
+            end
+            if type(runtime[id]) ~= "table" then
+                errors[#errors + 1] = "runtime api not mounted"
+            elseif type(runtime[id].run) ~= "function" then
+                errors[#errors + 1] = "runtime api missing run"
+            end
+
+            if #errors > 0 then
+                item.ok = false
+                item.errors = errors
+                report.invalid = report.invalid + 1
+                for _, msg in ipairs(errors) do
+                    report.errors[#report.errors + 1] = { id = id, error = msg }
+                end
+            else
+                report.valid = report.valid + 1
+            end
+            report.skills[#report.skills + 1] = item
+        end
+    end
+
+    table.sort(report.skills, function(a, b) return tostring(a.id) < tostring(b.id) end)
+    table.sort(report.errors, function(a, b)
+        if tostring(a.id) == tostring(b.id) then return tostring(a.error) < tostring(b.error) end
+        return tostring(a.id) < tostring(b.id)
+    end)
+
+    M.external_skill_report = report
+    core.log("action", "[registry] external skill validation report: discovered="
+        .. tostring(report.discovered)
+        .. " valid=" .. tostring(report.valid)
+        .. " invalid=" .. tostring(report.invalid))
+    return report
 end
 
 

@@ -78,6 +78,10 @@ function M.can_switch_backend(player_name)
     if not core.settings:get_bool("llm_ide_trusted_worldmod_backend", true) then return false end
     local tm = trusted_backend()
     if not tm then return false end
+    if tm.capabilities then
+        local caps = tm.capabilities()
+        return caps.browsable == true or caps.can_attempt_write == true
+    end
     if tm.is_browsable then return tm.is_browsable() end
     return tm.is_available and tm.is_available()
 end
@@ -136,12 +140,9 @@ function M.save(player_name, session, code)
     if session.persist_backend == "trusted_worldmod" then
         if not is_root(player_name) then return false, "Trusted worldmod backend is root-only" end
         local tm = trusted_backend()
-        if not tm or not tm.is_writable or not tm.is_writable() then
-            local diag = tm and tm.diagnostics_text and tm.diagnostics_text() or "trusted_worldmod write unavailable"
-            return false, diag
-        end
+        if not tm or not tm.write_file then return false, "trusted_worldmod backend unavailable" end
         local ok, err_or_path = tm.write_file(session.active_modname, filename, code)
-        local classification = tm.classify(session.active_modname, code)
+        local classification = tm.classify and tm.classify(session.active_modname, code) or nil
         return ok, err_or_path, classification
     end
 
@@ -326,9 +327,6 @@ function M.make_dir(player_name, session, rel_dir)
     if session.persist_backend == "trusted_worldmod" then
         if not is_root(player_name) then return false, "Trusted worldmod backend is root-only" end
         local tm = trusted_backend()
-        if not tm or not tm.is_writable or not tm.is_writable() then
-            return false, tm and tm.diagnostics_text and tm.diagnostics_text() or "trusted_worldmod write unavailable"
-        end
         if tm and tm.make_dir then return tm.make_dir(session.active_modname, rel_dir) end
         return false, "trusted_worldmod backend does not support mkdir"
     end
@@ -342,7 +340,9 @@ function M.status(session)
     local label = M.backend_label(session.persist_backend)
     if session.persist_backend == "trusted_worldmod" then
         local tm = trusted_backend()
-        local mode = (tm and tm.is_writable and tm.is_writable()) and "rw" or "ro"
+        local caps = tm and tm.capabilities and tm.capabilities() or nil
+        local mode = caps and (caps.write_mode == "trusted_insecure_env" and "rw"
+            or (caps.can_attempt_write and "write-attempt" or "ro")) or "ro"
         return label .. " / " .. tostring(session.active_modname or "llm_live_mod") .. " [" .. mode .. "]"
     end
     return label
