@@ -19,7 +19,7 @@ In-game action:
 
 Expected trace/log evidence:
 
-- `debug.txt` shows `[llm_connect] LLM Connect 1.2.0-dev init complete`.
+- `debug.txt` shows `[llm_connect] LLM Connect 1.2.0 init complete`.
 - `debug.txt` shows `[llm_connect] ready - 2 Lua-first skill(s) registered` or
   equivalent current count.
 - Chat health output lists core subsystems as `ok`.

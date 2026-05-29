@@ -1,5 +1,5 @@
 -- ===========================================================================
---  parser_utils.lua — LLM Connect v1.2.0-dev
+--  parser_utils.lua — LLM Connect v1.2.0
 --  author: H5N3RG
 --  license: LGPL-3.0-or-later
 --

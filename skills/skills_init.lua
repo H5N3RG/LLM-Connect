@@ -1,5 +1,5 @@
 -- ===========================================================================
---  skills_init.lua — Skills subsystem loader for LLM Connect 1.2.0-dev
+--  skills_init.lua — Skills subsystem loader for LLM Connect 1.2.0
 --
 --  Purpose:
 --    Keep skill registration/loading behind one boundary. Skills are not GUI

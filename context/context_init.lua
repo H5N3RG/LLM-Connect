@@ -1,5 +1,5 @@
 -- ===========================================================================
---  context_init.lua — Context subsystem loader for LLM Connect 1.2.0-dev
+--  context_init.lua — Context subsystem loader for LLM Connect 1.2.0
 --
 --  Purpose:
 --    Present context as a small routed subsystem instead of scattered globals.

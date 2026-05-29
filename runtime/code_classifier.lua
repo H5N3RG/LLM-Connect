@@ -7,7 +7,7 @@
 
 local M = {}
 
-M.version = "1.2.0-dev"
+M.version = "1.2.0"
 
 local DANGEROUS_PATTERNS = {
     {pattern = "os%.execute%s*%(", label = "os.execute"},

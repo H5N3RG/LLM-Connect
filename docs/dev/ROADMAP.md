@@ -41,7 +41,7 @@ Deferred:
 Release blockers:
 
 - Any syntax failure from `luajit -b` on project Lua files.
-- Startup failure before `[llm_connect] LLM Connect 1.2.0-dev init complete`.
+- Startup failure before `[llm_connect] LLM Connect 1.2.0 init complete`.
 - Agent runs executing while `llm_agent_enabled=false`.
 - Missing `player_name` in normal attached-skill agent actions.
 - Config GUI Agent tab buttons not dispatching.

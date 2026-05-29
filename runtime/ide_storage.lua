@@ -12,7 +12,7 @@
 local core = core
 local M = {}
 
-M.version = "1.2.0-dev"
+M.version = "1.2.0"
 
 local root = rawget(_G, "llm_connect") or {}
 local path_policy = root.path_policy or rawget(_G, "path_policy")

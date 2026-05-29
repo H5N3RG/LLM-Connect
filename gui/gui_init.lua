@@ -1,5 +1,5 @@
 -- ===========================================================================
---  gui_init.lua — GUI subsystem loader for LLM Connect 1.2.0-dev
+--  gui_init.lua — GUI subsystem loader for LLM Connect 1.2.0
 --
 --  Purpose:
 --    Load all formspec/front-end modules through one boundary. GUI modules are

@@ -1,5 +1,5 @@
 -- ===========================================================================
---  registry.lua — LLM Connect v1.2.0-dev Lua-first Skill Registry
+--  registry.lua — LLM Connect v1.2.0 Lua-first Skill Registry
 --  author: H5N3RG
 --  license: LGPL-3.0-or-later
 --
@@ -16,7 +16,7 @@
 local core = core
 local M = {}
 
-M.version = "1.2.0-dev"
+M.version = "1.2.0"
 M.protocol = "lua-first"
 M.skills = M.skills or {}
 M.context_providers = M.context_providers or {}

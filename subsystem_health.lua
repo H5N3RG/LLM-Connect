@@ -1,5 +1,5 @@
 -- ===========================================================================
---  subsystem_health.lua — LLM Connect 1.2.0-dev subsystem health/fallback layer
+--  subsystem_health.lua — LLM Connect 1.2.0 subsystem health/fallback layer
 --
 --  Purpose:
 --    Keep subsystem failures observable without turning every missing module

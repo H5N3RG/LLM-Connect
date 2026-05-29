@@ -1,5 +1,5 @@
 -- ===========================================================================
---  core_executor.lua — LLM Connect v1.2.0-dev
+--  core_executor.lua — LLM Connect v1.2.0
 --  author: H5N3RG
 --  license: LGPL-3.0-or-later
 --
@@ -16,7 +16,7 @@ local core = core
 local M = {}
 
 M.execution_history = {}
-M.version = "1.2.0-dev"
+M.version = "1.2.0"
 
 local function get_parser()
     return _G.parser_utils or (_G.llm_connect and _G.llm_connect.parser_utils)

@@ -1,5 +1,5 @@
 -- ===========================================================================
---  execution_policy.lua — LLM Connect 1.2.0-dev
+--  execution_policy.lua — LLM Connect 1.2.0
 --  author: H5N3RG
 --  license: LGPL-3.0-or-later
 --

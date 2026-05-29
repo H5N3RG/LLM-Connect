@@ -1,5 +1,5 @@
 -- ===========================================================================
---  api_init.lua — Provider/API subsystem loader for LLM Connect 1.2.0-dev
+--  api_init.lua — Provider/API subsystem loader for LLM Connect 1.2.0
 --
 --  Purpose:
 --    Keep provider-facing modules behind one API boundary so init.lua and

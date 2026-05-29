@@ -1,5 +1,5 @@
 -- ===========================================================================
---  agent_runtime.lua — LLM Connect v1.2.0-dev Dual-Channel Agent Orchestrator
+--  agent_runtime.lua — LLM Connect v1.2.0 Dual-Channel Agent Orchestrator
 --  author: H5N3RG
 --  license: LGPL-3.0-or-later
 --
@@ -20,7 +20,7 @@
 local core = core
 local M = {}
 
-M.version = "1.2.0-dev"
+M.version = "1.2.0"
 M.protocol = "dual-channel-lua-action"
 
 local mod_dir = core.get_modpath(core.get_current_modname())

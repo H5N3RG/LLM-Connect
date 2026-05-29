@@ -2,7 +2,7 @@
 
 LLM-Connect is a Lua-first AI agent framework for Luanti (formerly Minetest) that enables natural language interaction with the game world through a dual-channel architecture.
 
-## 🔧 Current Version: 1.2.0-dev
+## 🔧 Current Version: 1.2.0
 
 ## 🏗️ Architecture
 

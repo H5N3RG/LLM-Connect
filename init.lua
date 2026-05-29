@@ -1,5 +1,5 @@
 -- ===========================================================================
---  init.lua — LLM Connect 1.2.0-dev
+--  init.lua — LLM Connect 1.2.0
 --  author: H5N3RG
 --  license: LGPL-3.0-or-later
 --
@@ -45,7 +45,7 @@ local SKILLS_DIR = mod_dir .. "/skills"
 local GUI_DIR   = mod_dir .. "/gui"
 
 _G.llm_connect = rawget(_G, "llm_connect") or {}
-_G.llm_connect.version = _G.llm_connect.version or "1.2.0-dev"
+_G.llm_connect.version = _G.llm_connect.version or "1.2.0"
 _G.llm_connect.protocol = _G.llm_connect.protocol or "lua-first"
 
 -- Luanti 5.16+ no longer permits mod-directory persistence.
@@ -673,4 +673,4 @@ end)
 
 -- ===========================================================================
 
-core.log("action", "[llm_connect] LLM Connect 1.2.0-dev init complete")
+core.log("action", "[llm_connect] LLM Connect 1.2.0 init complete")

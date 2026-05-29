@@ -1,5 +1,5 @@
 -- ===========================================================================
---  runtime_init.lua — Runtime subsystem loader for LLM Connect 1.2.0-dev
+--  runtime_init.lua — Runtime subsystem loader for LLM Connect 1.2.0
 --
 --  Purpose:
 --    Make execution policy, path policy, IDE storage and core executor a single

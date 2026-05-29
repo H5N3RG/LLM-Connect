@@ -99,7 +99,7 @@ end
 
 local live_trace = {}
 
-live_trace.version = "1.2.0-dev"
+live_trace.version = "1.2.0"
 live_trace.max_line_len = 220
 live_trace.max_buffer = 300
 live_trace.categories = {
