@@ -124,6 +124,17 @@ local function read_file(path)
     return nil, tostring(content)
 end
 
+local function file_exists(path)
+    if not io or not io.open then return false end
+    local ok, exists = pcall(function()
+        local f = io.open(path, "rb")
+        if not f then return false end
+        f:close()
+        return true
+    end)
+    return ok and exists == true
+end
+
 local function write_file(path, content)
     if not io or not io.open then return false, "write API unavailable" end
     local ok, result, err = pcall(function()
@@ -242,6 +253,77 @@ local function ensure_storage_root()
     return mkdir_one(base)
 end
 
+local function startup_index_path()
+    local base = storage_root()
+    return base and join(base, "_startup.txt") or nil
+end
+
+local function normalize_index_entry(path)
+    local rel = tostring(path or ""):match("^%s*(.-)%s*$")
+    if rel:match("^[/\\]") or rel:match("^%a:[/\\]") then return nil, "Absolute paths are not allowed" end
+    rel = rel:gsub("\\", "/"):gsub("/+$", ""):gsub("/+", "/")
+    if rel == "" then return nil, "Invalid startup path" end
+    if rel:match("^/") or rel:match("^%a:") then return nil, "Absolute paths are not allowed" end
+    if not rel:match("%.lua$") then return nil, "Only .lua files can be enabled for startup" end
+    for part in rel:gmatch("[^/]+") do
+        if part == "." or part == ".." or part == "" then
+            return nil, "Path traversal is not allowed"
+        end
+    end
+    return rel
+end
+
+local function startup_entry_for_player_file(player_name, relpath)
+    local raw = tostring(relpath or ""):match("^%s*(.-)%s*$")
+    if raw:match("^[/\\]") or raw:match("^%a:[/\\]") then return nil, "Absolute paths are not allowed" end
+    local clean, err = normalize_rel(relpath or "")
+    if not clean or clean == "" then return nil, err or "Invalid path" end
+    if not clean:match("%.lua$") then return nil, "Only .lua files can be enabled for startup" end
+    local user = safe_player_name(player_name)
+    return normalize_index_entry(user .. "/scripts/" .. clean)
+end
+
+local function read_startup_index()
+    local path = startup_index_path()
+    if not path then return nil, "world path unavailable" end
+    if not file_exists(path) then return {} end
+
+    local content, err = read_file(path)
+    if not content then return nil, err end
+
+    local seen, entries = {}, {}
+    for line in tostring(content):gmatch("[^\r\n]+") do
+        local rel = normalize_index_entry(line)
+        if rel and not seen[rel] then
+            seen[rel] = true
+            entries[#entries + 1] = rel
+        end
+    end
+    table.sort(entries)
+    return entries
+end
+
+local function write_startup_index(entries)
+    local ok, err = ensure_storage_root()
+    if not ok then return false, err end
+
+    local seen, clean_entries = {}, {}
+    for _, entry in ipairs(entries or {}) do
+        local rel = normalize_index_entry(entry)
+        if rel and not seen[rel] then
+            seen[rel] = true
+            clean_entries[#clean_entries + 1] = rel
+        end
+    end
+    table.sort(clean_entries)
+
+    local path = startup_index_path()
+    if not path then return false, "world path unavailable" end
+    local content = table.concat(clean_entries, "\n")
+    if content ~= "" then content = content .. "\n" end
+    return write_file(path, content)
+end
+
 local function ensure_runtime_root(player_name)
     local base = storage_root()
     if not base then return false, "world path unavailable" end
@@ -330,7 +412,65 @@ function M.delete_file(player_name, session, relpath)
     local full, path_err = stack_path(runtime_base(player_name), clean)
     if not full then return false, path_err end
     local ok, rm_err = os.remove(full)
+    if ok then M.disable_startup(player_name, clean) end
     return ok == true, rm_err
+end
+
+function M.list_startup_enabled()
+    return read_startup_index() or {}
+end
+
+function M.is_startup_enabled(player_name, relpath)
+    local entry, entry_err = startup_entry_for_player_file(player_name, relpath)
+    if not entry then return false, entry_err end
+    local entries, read_err = read_startup_index()
+    if not entries then return false, read_err end
+    for _, existing in ipairs(entries) do
+        if existing == entry then return true end
+    end
+    return false
+end
+
+function M.enable_startup(player_name, relpath)
+    local entry, entry_err = startup_entry_for_player_file(player_name, relpath)
+    if not entry then return false, entry_err end
+
+    local full, path_err = stack_path(runtime_base(player_name), normalize_rel(relpath or ""))
+    if not full then return false, path_err end
+    local code = read_file(full)
+    if code == nil then
+        return false, "Cannot enable missing file for cold reload: " .. tostring(relpath)
+    end
+
+    local entries, read_err = read_startup_index()
+    if not entries then return false, read_err end
+    for _, existing in ipairs(entries) do
+        if existing == entry then return true, entry end
+    end
+    entries[#entries + 1] = entry
+    local ok, write_err = write_startup_index(entries)
+    if not ok then return false, write_err end
+    return true, entry
+end
+
+function M.disable_startup(player_name, relpath)
+    local entry, entry_err = startup_entry_for_player_file(player_name, relpath)
+    if not entry then return false, entry_err end
+
+    local entries, read_err = read_startup_index()
+    if not entries then return false, read_err end
+    local out, changed = {}, false
+    for _, existing in ipairs(entries) do
+        if existing == entry then
+            changed = true
+        else
+            out[#out + 1] = existing
+        end
+    end
+    if not changed then return true, "not enabled" end
+    local ok, write_err = write_startup_index(out)
+    if not ok then return false, write_err end
+    return true
 end
 
 function M.get_diagnostics(player_name, session)
@@ -365,51 +505,33 @@ function M.load_cold_reload_scripts()
     if not boot_ok then return 0, boot_err end
 
     local base = storage_root()
-    local players, players_err = get_dir_list(base, true)
-    if not players then
-        core.log("warning", "[ide_storage] cold reload skipped; cannot list storage root "
-            .. tostring(base) .. ": " .. tostring(players_err))
-        return 0, players_err
+    local entries, read_err = read_startup_index()
+    if not entries then
+        core.log("warning", "[ide_storage] cold reload skipped; cannot read startup index: " .. tostring(read_err))
+        return 0, read_err
     end
-    table.sort(players)
-
     local loaded = 0
-    for _, player in ipairs(players) do
-        if player ~= "." and player ~= ".." then
-            local scripts_root = join(base, player, "scripts")
-            if path_exists(scripts_root) then
-                local files = collect_files(scripts_root, "", {})
-                table.sort(files)
-                for _, rel in ipairs(files) do
-                    if rel:match("%.lua$") then
-                        local full = stack_path(scripts_root, rel)
-                        local code, read_err
-                        if full then
-                            code, read_err = read_file(full)
-                        else
-                            read_err = "invalid script path"
-                        end
-                        local label = player .. "/scripts/" .. rel
-                        if code then
-                            local ok, err = pcall(function()
-                                local fn, compile_err = loadstring(code, "=(llm_scripts/" .. label .. ")")
-                                if not fn then error(compile_err) end
-                                fn()
-                            end)
-                            if ok then
-                                loaded = loaded + 1
-                                core.log("action", "[ide_storage] cold reload loaded: " .. label)
-                            else
-                                core.log("error", "[ide_storage] cold reload failed for " .. label .. ": " .. tostring(err))
-                            end
-                        else
-                            core.log("error", "[ide_storage] cold reload read failed for "
-                                .. label .. ": " .. tostring(read_err or "unknown error"))
-                        end
-                    end
+    for _, rel in ipairs(entries) do
+        local full = stack_path(base, rel)
+        if not full or not file_exists(full) then
+            core.log("warning", "[ide_storage] cold reload missing indexed script: " .. tostring(rel))
+        else
+            local code, script_err = read_file(full)
+            if code then
+                local ok, err = pcall(function()
+                    local fn, compile_err = loadstring(code, "=(llm_scripts/" .. rel .. ")")
+                    if not fn then error(compile_err) end
+                    fn()
+                end)
+                if ok then
+                    loaded = loaded + 1
+                    core.log("action", "[ide_storage] cold reload loaded: " .. rel)
+                else
+                    core.log("error", "[ide_storage] cold reload failed for " .. rel .. ": " .. tostring(err))
                 end
             else
-                core.log("action", "[ide_storage] cold reload: no scripts directory for " .. tostring(player))
+                core.log("error", "[ide_storage] cold reload read failed for "
+                    .. rel .. ": " .. tostring(script_err or "unknown error"))
             end
         end
     end

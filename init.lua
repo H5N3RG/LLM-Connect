@@ -198,28 +198,6 @@ local function early_file_exists(path)
     return ok and exists == true
 end
 
-local function early_collect_lua_files(root_path, relpath, out)
-    out = out or {}
-    relpath = relpath or ""
-    local full = relpath == "" and root_path or early_join(root_path, relpath)
-    local dirs = early_get_dir_list(full, true) or {}
-    local files = early_get_dir_list(full, false) or {}
-    table.sort(dirs)
-    table.sort(files)
-    for _, file in ipairs(files) do
-        if file:match("%.lua$") then
-            out[#out + 1] = relpath == "" and file or (relpath .. "/" .. file)
-        end
-    end
-    for _, dir in ipairs(dirs) do
-        if dir ~= "." and dir ~= ".." then
-            early_collect_lua_files(root_path, relpath == "" and dir or (relpath .. "/" .. dir), out)
-        end
-    end
-    table.sort(out)
-    return out
-end
-
 local function early_load_lua_file(path, chunk_name, log_prefix)
     local code, read_err = early_read_file(path)
     if not code then
@@ -237,6 +215,35 @@ local function early_load_lua_file(path, chunk_name, log_prefix)
     end
     core.log("action", log_prefix .. " loaded: " .. tostring(chunk_name))
     return true
+end
+
+local function early_validate_startup_entry(raw)
+    local rel = tostring(raw or ""):match("^%s*(.-)%s*$")
+    if rel:match("^[/\\]") or rel:match("^%a:[/\\]") then return nil end
+    rel = rel:gsub("\\", "/"):gsub("/+$", ""):gsub("/+", "/")
+    if rel == "" then return nil end
+    if rel:match("^/") or rel:match("^%a:") then return nil end
+    if not rel:match("%.lua$") then return nil end
+    for part in rel:gmatch("[^/]+") do
+        if part == ".." or part == "." or part == "" then return nil end
+    end
+    return rel
+end
+
+local function early_read_startup_index(path)
+    local content, err = early_read_file(path)
+    if not content then return {}, err end
+
+    local seen, entries = {}, {}
+    for line in tostring(content):gmatch("[^\r\n]+") do
+        local rel = early_validate_startup_entry(line)
+        if rel and not seen[rel] then
+            seen[rel] = true
+            entries[#entries + 1] = rel
+        end
+    end
+    table.sort(entries)
+    return entries
 end
 
 local function load_early_startup_code()
@@ -257,24 +264,29 @@ local function load_early_startup_code()
     local storage_root = early_join(world, "llm_scripts")
     if not early_path_exists(storage_root) then return loaded end
 
-    local players, players_err = early_get_dir_list(storage_root, true)
-    if not players then
-        core.log("warning", "[llm_connect] early cold reload skipped; cannot list storage root "
-            .. tostring(storage_root) .. ": " .. tostring(players_err))
+    local startup_index = early_join(storage_root, "_startup.txt")
+    if not early_file_exists(startup_index) then
+        if loaded > 0 then
+            core.log("action", "[llm_connect] early startup/cold reload scripts loaded: " .. tostring(loaded))
+        end
         return loaded
     end
-    table.sort(players)
 
-    for _, player in ipairs(players) do
-        if player ~= "." and player ~= ".." then
-            local scripts_root = early_join(storage_root, player, "scripts")
-            if early_path_exists(scripts_root) then
-                for _, rel in ipairs(early_collect_lua_files(scripts_root, "", {})) do
-                    local label = "llm_scripts/" .. player .. "/scripts/" .. rel
-                    if early_load_lua_file(early_join(scripts_root, rel), "(" .. label .. ")", "[llm_connect] early cold reload") then
-                        loaded = loaded + 1
-                    end
-                end
+    local entries, index_err = early_read_startup_index(startup_index)
+    if index_err then
+        core.log("warning", "[llm_connect] early cold reload skipped; cannot read "
+            .. tostring(startup_index) .. ": " .. tostring(index_err))
+        return loaded
+    end
+
+    for _, rel in ipairs(entries) do
+        local full = early_join(storage_root, rel)
+        if not early_file_exists(full) then
+            core.log("warning", "[llm_connect] early cold reload missing indexed script: llm_scripts/" .. rel)
+        else
+            local label = "llm_scripts/" .. rel
+            if early_load_lua_file(full, "(" .. label .. ")", "[llm_connect] early cold reload") then
+                loaded = loaded + 1
             end
         end
     end

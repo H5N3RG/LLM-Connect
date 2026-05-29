@@ -70,15 +70,19 @@ Provides:
 ## 🛠️ Current Internal Skills
 
 - `command_agent` - Executes chat commands
-- `worldedit_agent` - WorldEdit building operations with high-level primitives
+- `mapgen_painter` - Prototype map generation / painting skill
+- `node_printer_preview` - Node-plan preview and printing support
 
 ## 🔄 IDE Persistence / Cold Reload
 
-The Smart Lua IDE uses the flat runtime storage service:
+The Smart Lua IDE uses world-backed storage:
 - Single backend: `world/llm_scripts/<player>/scripts/`
-- `Run`: Transient execution
-- `Save`: Manual persistence into world-backed storage
-- Cold reload: saved `*.lua` scripts are loaded deterministically on the next server/world start
+- `Run`: transient execution in the current runtime
+- `Save`: persists a Lua snippet without activating it at startup
+- `Enable on Restart` in the file manager: marks selected saved scripts for cold reload
+- Cold reload: only explicitly enabled scripts are loaded during the next server/world start
+
+Migration note: saved scripts from earlier 1.2.0-dev builds are inert after this change until enabled through the File Manager.
 
 ## 📚 Documentation
 

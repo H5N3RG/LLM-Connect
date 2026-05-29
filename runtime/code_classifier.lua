@@ -115,7 +115,7 @@ end
 function M.format_summary(classification)
     classification = classification or {class = "unknown"}
     local parts = {"Class: " .. tostring(classification.class)}
-    parts[#parts + 1] = "Cold reload: saved scripts load on server/world restart"
+    parts[#parts + 1] = "Cold reload: enable saved scripts in Files for next server/world restart"
     if classification.requires_restart then parts[#parts + 1] = "Restart: recommended" end
     if classification.sticky then parts[#parts + 1] = "Sticky: yes" end
     if classification.issues and #classification.issues > 0 then

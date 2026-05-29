@@ -515,7 +515,7 @@ function M.handle_fields(name, formname, fields)
         if ok then
             session.output        = "✓ Saved: " .. tostring(rel_or_err)
                 .. "\nBackend: " .. get_storage().status(session)
-                .. "\nCold reload: active after server/world restart."
+                .. "\nOpen Files to enable this script on next server/world start."
             local cc = _G.code_classifier or (_G.llm_connect and _G.llm_connect.code_classifier)
             if cc and cc.format_summary and classification then
                 session.output = session.output .. "\n\n" .. cc.format_summary(classification)

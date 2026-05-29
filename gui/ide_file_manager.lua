@@ -36,6 +36,9 @@ local unavailable_storage = {
     read = function() return nil, "storage unavailable" end,
     make_dir = function() return false, "storage unavailable" end,
     delete = function() return false, "storage unavailable" end,
+    is_startup_enabled = function() return false, "storage unavailable" end,
+    enable_startup = function() return false, "storage unavailable" end,
+    disable_startup = function() return false, "storage unavailable" end,
 }
 
 local function get_storage()
@@ -89,6 +92,20 @@ local function file_type(path)
     if lower:match("%.md$") then return "Markdown" end
     if lower:match("%.txt$") then return "Text" end
     return "File"
+end
+
+local function is_lua_file(path)
+    return tostring(path or ""):lower():match("%.lua$") ~= nil
+end
+
+local function has_priv(name, priv)
+    local p = core.get_player_privs(name) or {}
+    return p[priv] == true
+end
+
+local function is_root(name)
+    local policy = _G.execution_policy or (_G.llm_connect and _G.llm_connect.policy)
+    return policy and policy.is_root and policy.is_root(name) or has_priv(name, "llm_root")
 end
 
 local function get_fm(name)
@@ -316,6 +333,17 @@ function M.show(name, ide_session)
     table.insert(fs, "textarea[11.0,2.10;6.75,6.15;fm_preview;;" .. esc(fm.preview or "") .. "]")
     local info = fm.selected_path and ("/" .. fm.selected_path .. " — " .. file_type(fm.selected_path)) or "Select a file or folder from the middle panel."
     table.insert(fs, "label[11.0,8.35;" .. esc(short_label(info, 82)) .. "]")
+    local can_toggle_startup = fm.selected_path and fm.selected_type == "file" and is_lua_file(fm.selected_path)
+    local startup_enabled = false
+    local startup_err
+    if can_toggle_startup and storage.is_startup_enabled then
+        startup_enabled, startup_err = storage.is_startup_enabled(name, fm.selected_path)
+    end
+    if can_toggle_startup then
+        local status = startup_enabled and "ENABLED" or "DISABLED"
+        if startup_err then status = status .. " (" .. tostring(startup_err) .. ")" end
+        table.insert(fs, "label[11.0,8.68;" .. esc("On restart: " .. status) .. "]")
+    end
 
     table.insert(fs, "label[0.35,8.92;" .. esc(fm.status or "Ready.") .. "]")
     table.insert(fs, "button[0.35,9.35;1.45,0.55;fm_up;Up]")
@@ -328,6 +356,15 @@ function M.show(name, ide_session)
     table.insert(fs, "button[11.80,9.35;1.50,0.55;fm_delete;Delete]")
     table.insert(fs, "button[13.50,9.35;2.35,0.55;fm_diag;Diagnostics]")
     table.insert(fs, "button[16.25,9.35;1.50,0.55;fm_back;Back]")
+    if can_toggle_startup and is_root(name) then
+        if startup_enabled then
+            table.insert(fs, "style[fm_disable_startup;bgcolor=#5a3030;textcolor=#ffffff]")
+            table.insert(fs, "button[15.30,8.70;2.45,0.55;fm_disable_startup;Disable on Restart]")
+        else
+            table.insert(fs, "style[fm_enable_startup;bgcolor=#2f5a3a;textcolor=#ffffff]")
+            table.insert(fs, "button[15.30,8.70;2.45,0.55;fm_enable_startup;Enable on Restart]")
+        end
+    end
 
     core.show_formspec(name, "llm_connect:ide_file_manager", table.concat(fs))
 end
@@ -405,6 +442,30 @@ function M.handle_fields(name, fields, ide_session, callbacks)
     elseif fields.fm_attach then
         local result = attach_selected(name, ide_session, fm)
         if result == "ide" and callbacks.show_ide then callbacks.show_ide(name) else M.show(name, ide_session) end
+        return true
+    elseif fields.fm_enable_startup or fields.fm_disable_startup then
+        if not is_root(name) then
+            fm.status = "Startup toggles require llm_root."
+        elseif not fm.selected_path or fm.selected_type ~= "file" or not is_lua_file(fm.selected_path) then
+            fm.status = "Select a .lua file before changing cold reload."
+        elseif fields.fm_enable_startup then
+            local ok, entry_or_err
+            if storage.enable_startup then
+                ok, entry_or_err = storage.enable_startup(name, fm.selected_path)
+            end
+            fm.status = ok
+                and ("Enabled for cold reload on next server/world start: " .. fm.selected_path)
+                or ("Enable failed: " .. tostring(entry_or_err or "backend does not support startup enable"))
+        else
+            local ok, err
+            if storage.disable_startup then
+                ok, err = storage.disable_startup(name, fm.selected_path)
+            end
+            fm.status = ok
+                and ("Disabled for cold reload: " .. fm.selected_path)
+                or ("Disable failed: " .. tostring(err or "backend does not support startup disable"))
+        end
+        M.show(name, ide_session)
         return true
     elseif fields.fm_new_file then
         local target = join_path(fm.dir, "untitled.lua")
