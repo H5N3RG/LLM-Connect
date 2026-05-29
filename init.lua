@@ -5,19 +5,20 @@
 --
 --  LOAD ORDER:
 --    1. Preserve HTTP API handle
---    2. Register privileges
---    3. api/llm_api.lua      — HTTP layer, API configuration
---    4. agent/parser_utils.lua — LLM output parsing / repair
---    5. context/basic_context.lua — base context provider
---    6. skills/registry.lua — skill gateway, set _G.llm_connect
+--    2. Early startup/cold-reload scripts from world-backed storage
+--    3. Register privileges
+--    4. api/llm_api.lua      — HTTP layer, API configuration
+--    5. agent/parser_utils.lua — LLM output parsing / repair
+--    6. context/basic_context.lua — base context provider
+--    7. skills/registry.lua — skill gateway, set _G.llm_connect
 --       └ registry.expose_global()     → expose _G.llm_connect.registry
---    7. context/context_registry.lua — agent self-context / retrieval layer
+--    8. context/context_registry.lua — agent self-context / retrieval layer
 --       └ registry.load_internal()     → load built-in skills after context exists
---    8. runtime/execution_policy.lua — central root/dev execution policy
---    9. runtime/path_policy.lua — stack-relative filesystem roots
---   10. runtime/code_classifier.lua — path-neutral code classification metadata
---   11. runtime/ide_storage.lua — world-backed IDE persistence + cold-reload loader
---   12. runtime/core_executor.lua — Shared Lua Runtime Backend
+--    9. runtime/execution_policy.lua — central root/dev execution policy
+--   10. runtime/path_policy.lua — stack-relative filesystem roots
+--   11. runtime/code_classifier.lua — path-neutral code classification metadata
+--   12. runtime/ide_storage.lua — world-backed IDE persistence
+--   13. runtime/core_executor.lua — Shared Lua Runtime Backend
 --   14. agent/agent_runtime.lua — Agent-Orchestrator
 --   15. gui/       — first-class frontend, loaded directly
 --       └ code_executor.lua  — legacy shim to core_executor
@@ -31,7 +32,6 @@
 --                                         already self-registered as Luanti mods
 --   11. Main GUI and config GUI
 --   12. Register formspec handlers
---   13. Load llm_startup.lua and world-backed IDE scripts if present
 --
 -- ===========================================================================
 
@@ -135,7 +135,160 @@ local function require_method(module, method, label)
 end
 
 -- ===========================================================================
--- 1. Acquire HTTP API
+-- 2. Early startup/cold-reload code
+--
+-- Runtime registrations such as core.register_node must happen during mod load.
+-- This deliberately avoids runtime/ide_storage.lua so persisted world-backed
+-- scripts can register nodes/tools/entities/crafts before later subsystems add
+-- callbacks or close load-time-sensitive APIs.
+-- ===========================================================================
+
+local function early_join(...)
+    local parts, out = {...}, {}
+    local sep = DIR_DELIM or "/"
+    for i, part in ipairs(parts) do
+        part = tostring(part or "")
+        if part ~= "" then
+            if i > 1 then part = part:gsub("^[/\\]+", "") end
+            part = part:gsub("[/\\]+$", "")
+            out[#out + 1] = part
+        end
+    end
+    return table.concat(out, sep)
+end
+
+local function early_get_dir_list(path, is_dir)
+    if not core.get_dir_list then return nil, "core.get_dir_list unavailable" end
+    local ok, result = pcall(core.get_dir_list, path, is_dir)
+    if ok then return result end
+    return nil, tostring(result)
+end
+
+local function early_path_exists(path)
+    if core.path_exists then
+        local ok, exists = pcall(core.path_exists, path)
+        if ok then return exists == true end
+    end
+    local dirs = early_get_dir_list(path, true)
+    local files = early_get_dir_list(path, false)
+    return type(dirs) == "table" or type(files) == "table"
+end
+
+local function early_read_file(path)
+    if not io or not io.open then return nil, "read API unavailable" end
+    local ok, content, err = pcall(function()
+        local f, open_err = io.open(path, "rb")
+        if not f then return nil, open_err end
+        local data = f:read("*a")
+        f:close()
+        return data
+    end)
+    if ok then return content, err end
+    return nil, tostring(content)
+end
+
+local function early_file_exists(path)
+    if not io or not io.open then return false end
+    local ok, exists = pcall(function()
+        local f = io.open(path, "rb")
+        if not f then return false end
+        f:close()
+        return true
+    end)
+    return ok and exists == true
+end
+
+local function early_collect_lua_files(root_path, relpath, out)
+    out = out or {}
+    relpath = relpath or ""
+    local full = relpath == "" and root_path or early_join(root_path, relpath)
+    local dirs = early_get_dir_list(full, true) or {}
+    local files = early_get_dir_list(full, false) or {}
+    table.sort(dirs)
+    table.sort(files)
+    for _, file in ipairs(files) do
+        if file:match("%.lua$") then
+            out[#out + 1] = relpath == "" and file or (relpath .. "/" .. file)
+        end
+    end
+    for _, dir in ipairs(dirs) do
+        if dir ~= "." and dir ~= ".." then
+            early_collect_lua_files(root_path, relpath == "" and dir or (relpath .. "/" .. dir), out)
+        end
+    end
+    table.sort(out)
+    return out
+end
+
+local function early_load_lua_file(path, chunk_name, log_prefix)
+    local code, read_err = early_read_file(path)
+    if not code then
+        core.log("error", log_prefix .. " read failed for " .. tostring(chunk_name) .. ": " .. tostring(read_err))
+        return false
+    end
+    local ok, err = pcall(function()
+        local fn, compile_err = loadstring(code, "=" .. tostring(chunk_name))
+        if not fn then error(compile_err) end
+        fn()
+    end)
+    if not ok then
+        core.log("error", log_prefix .. " failed for " .. tostring(chunk_name) .. ": " .. tostring(err))
+        return false
+    end
+    core.log("action", log_prefix .. " loaded: " .. tostring(chunk_name))
+    return true
+end
+
+local function load_early_startup_code()
+    local world = core.get_worldpath and core.get_worldpath() or nil
+    if not world or world == "" then
+        core.log("warning", "[llm_connect] early startup skipped: world path unavailable")
+        return 0
+    end
+
+    local loaded = 0
+    local startup_file = early_join(world, "llm_startup.lua")
+    if early_file_exists(startup_file) then
+        if early_load_lua_file(startup_file, startup_file, "[llm_connect] early startup code") then
+            loaded = loaded + 1
+        end
+    end
+
+    local storage_root = early_join(world, "llm_scripts")
+    if not early_path_exists(storage_root) then return loaded end
+
+    local players, players_err = early_get_dir_list(storage_root, true)
+    if not players then
+        core.log("warning", "[llm_connect] early cold reload skipped; cannot list storage root "
+            .. tostring(storage_root) .. ": " .. tostring(players_err))
+        return loaded
+    end
+    table.sort(players)
+
+    for _, player in ipairs(players) do
+        if player ~= "." and player ~= ".." then
+            local scripts_root = early_join(storage_root, player, "scripts")
+            if early_path_exists(scripts_root) then
+                for _, rel in ipairs(early_collect_lua_files(scripts_root, "", {})) do
+                    local label = "llm_scripts/" .. player .. "/scripts/" .. rel
+                    if early_load_lua_file(early_join(scripts_root, rel), "(" .. label .. ")", "[llm_connect] early cold reload") then
+                        loaded = loaded + 1
+                    end
+                end
+            end
+        end
+    end
+
+    if loaded > 0 then
+        core.log("action", "[llm_connect] early startup/cold reload scripts loaded: " .. tostring(loaded))
+    end
+    return loaded
+end
+
+load_early_startup_code()
+
+-- ===========================================================================
+-- 3. Acquire HTTP API
 -- ===========================================================================
 
 local http = core.request_http_api()
@@ -147,7 +300,7 @@ if not http then
 end
 
 -- ===========================================================================
--- 2. Register privileges
+-- 4. Register privileges
 -- ===========================================================================
 
 core.register_privilege("llm", {
@@ -456,8 +609,6 @@ core.register_chatcommand("llm_skill_attach", {
     end,
 })
 
-local startup_file = (_G.llm_connect and _G.llm_connect.path_policy and _G.llm_connect.path_policy.startup_file()) or (core.get_worldpath() .. "/llm_startup.lua")
-
 -- ===========================================================================
 -- 12. Central formspec handler
 -- ===========================================================================
@@ -507,32 +658,6 @@ core.register_on_player_receive_fields(function(player, formname, fields)
 
     return false
 end)
-
--- ===========================================================================
--- 13. Load startup code (llm_startup.lua and world-backed IDE scripts)
--- ===========================================================================
-
-local function load_startup_code()
-    local f = io.open(startup_file, "r")
-    if not f then return end
-    f:close()
-    core.log("action", "[llm_connect] loading startup code: " .. startup_file)
-    local ok, err = pcall(dofile, startup_file)
-    if not ok then
-        core.log("error", "[llm_connect] startup code error: " .. tostring(err))
-    end
-end
-
-load_startup_code()
-
-if ide_storage and ide_storage.load_cold_reload_scripts then
-    local count, err = ide_storage.load_cold_reload_scripts()
-    if count and count > 0 then
-        core.log("action", "[llm_connect] cold reload scripts loaded: " .. tostring(count))
-    elseif err then
-        core.log("warning", "[llm_connect] cold reload skipped: " .. tostring(err))
-    end
-end
 
 -- ===========================================================================
 
