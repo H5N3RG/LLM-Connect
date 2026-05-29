@@ -2,8 +2,8 @@
 --  runtime_init.lua — Runtime subsystem loader for LLM Connect 1.2.0-dev
 --
 --  Purpose:
---    Make execution policy, path policy, storage backends and core executor a
---    single runtime boundary used by GUI, agent and future API frontends.
+--    Make execution policy, path policy, IDE storage and core executor a single
+--    runtime boundary used by GUI, agent and future API frontends.
 -- ===========================================================================
 
 local core = core
@@ -16,7 +16,6 @@ end
 
 local mod_dir = core.get_modpath(core.get_current_modname())
 local RUNTIME_DIR = mod_dir .. "/runtime"
-local STORAGE_DIR = RUNTIME_DIR .. "/storage"
 
 local function load_required(name, path)
     local ok, module = pcall(dofile, path)
@@ -72,9 +71,8 @@ end
 
 M.execution_policy = load_required("execution_policy", RUNTIME_DIR .. "/execution_policy.lua")
 M.path_policy = load_required("path_policy", RUNTIME_DIR .. "/path_policy.lua")
-M.storage_backends = load_required("storage_backends", STORAGE_DIR .. "/storage_backends.lua")
-M.runtime_scripts = load_required("runtime_scripts", STORAGE_DIR .. "/runtime_scripts.lua")
-M.trusted_mods = load_optional("trusted_mods", STORAGE_DIR .. "/trusted_mods.lua")
+M.code_classifier = load_required("code_classifier", RUNTIME_DIR .. "/code_classifier.lua")
+M.ide_storage = load_required("ide_storage", RUNTIME_DIR .. "/ide_storage.lua")
 M.core_executor = load_required("core_executor", RUNTIME_DIR .. "/core_executor.lua")
 
 local function normalize_request(player_name_or_request, code, options)
@@ -149,17 +147,15 @@ _G.llm_connect = rawget(_G, "llm_connect") or {}
 _G.llm_connect.runtime = M
 _G.llm_connect.policy = M.execution_policy
 _G.llm_connect.path_policy = M.path_policy
-_G.llm_connect.storage_backends = M.storage_backends
-_G.llm_connect.runtime_scripts = M.runtime_scripts
-_G.llm_connect.trusted_mods = M.trusted_mods
+_G.llm_connect.code_classifier = M.code_classifier
+_G.llm_connect.ide_storage = M.ide_storage
 _G.llm_connect.core_executor = M.core_executor
 
--- Legacy global aliases kept for older GUI/IDE/backend code.
+-- Legacy global aliases kept for older GUI/IDE/debug snippets.
 _G.execution_policy = M.execution_policy
 _G.path_policy = M.path_policy
-_G.storage_backends = M.storage_backends
-_G.runtime_scripts = M.runtime_scripts
-_G.trusted_mods = M.trusted_mods
+_G.code_classifier = M.code_classifier
+_G.ide_storage = M.ide_storage
 _G.core_executor = M.core_executor
 
 core.log("action", "[runtime_init] runtime subsystem loaded")

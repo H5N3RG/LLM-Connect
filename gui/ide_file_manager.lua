@@ -39,7 +39,8 @@ local unavailable_storage = {
 }
 
 local function get_storage()
-    return _G.ide_storage or unavailable_storage
+    local root = _G.llm_connect
+    return (root and root.ide_storage) or (root and root.runtime and root.runtime.ide_storage) or _G.ide_storage or unavailable_storage
 end
 
 local function norm_path(path)
@@ -137,15 +138,6 @@ local function master_entries(name, ide_session)
     local roots = storage.master_entries and storage.master_entries(name, ide_session) or nil
     if roots and #roots > 0 then return roots end
 
-    if ide_session.persist_backend == "llm_runtime" then
-        return {
-            {type = "dir", name = "/", path = ""},
-            {type = "dir", name = "runtime", path = "runtime"},
-            {type = "dir", name = "sticky", path = "sticky"},
-            {type = "dir", name = "startup", path = "startup"},
-            {type = "dir", name = "disabled", path = "disabled"},
-        }
-    end
     return {{type = "dir", name = "/", path = ""}}
 end
 
@@ -167,16 +159,10 @@ local function load_entries(name, ide_session, fm)
     fm._master = master_entries(name, ide_session)
     fm._entries = entries
 
-    if ide_session.persist_backend == "trusted_worldmod" then
-        local tm = _G.llm_connect and _G.llm_connect.trusted_mods
-        if tm and tm.active_mod_status and fm.dir == "" and #entries == 0 then
-            local exists, msg = tm.active_mod_status(ide_session.active_modname)
-            if not exists then
-                fm.preview = tostring(msg or "Active worldmod is not available.")
-                    .. "\n\nUse Diagnostics for trusted backend details."
-                fm.status = tostring(msg or "Active worldmod is not available.")
-            end
-        end
+    local diag = storage.get_diagnostics and storage.get_diagnostics(name, ide_session) or nil
+    if diag and diag.diagnostics and #diag.diagnostics > 0 then
+        fm.status = table.concat(diag.diagnostics, " | ")
+        if #entries == 0 then fm.preview = table.concat(diag.diagnostics, "\n") end
     end
 
     return entries
@@ -282,10 +268,6 @@ local function build_header(fs, name, ide_session, storage)
     table.insert(fs, "box[0,0;18.4,0.9;#1a1a2e]")
     table.insert(fs, "label[0.35,0.35;File Manager — Smart Lua IDE]")
     table.insert(fs, "label[10.6,0.35;Backend: " .. esc(storage.status(ide_session)) .. "]")
-    if ide_session.persist_backend == "trusted_worldmod" then
-        table.insert(fs, "field[15.15,0.22;2.05,0.55;fm_modname;;" .. esc(ide_session.active_modname or "llm_live_mod") .. "]")
-        table.insert(fs, "field_close_on_enter[fm_modname;false]")
-    end
 end
 
 function M.show(name, ide_session)
@@ -356,16 +338,6 @@ function M.handle_fields(name, fields, ide_session, callbacks)
     storage.ensure_session(ide_session)
     local fm = get_fm(name)
 
-    if fields.fm_modname and ide_session.persist_backend == "trusted_worldmod" then
-        ide_session.active_modname = trim(fields.fm_modname):gsub("[^%w_]", "_")
-        if ide_session.active_modname == "" then ide_session.active_modname = "llm_live_mod" end
-        fm.dir = ""
-        fm.selected_path = nil
-        fm.selected_type = nil
-        fm.preview = "Switched active worldmod."
-        fm.status = "Active mod: " .. ide_session.active_modname
-    end
-
     if fields.fm_filter then fm.filter = fields.fm_filter end
 
     if fields.fm_back or fields.quit then
@@ -380,12 +352,11 @@ function M.handle_fields(name, fields, ide_session, callbacks)
     end
 
     if fields.fm_diag then
-        local tm = _G.llm_connect and _G.llm_connect.trusted_mods
-        if ide_session.persist_backend == "trusted_worldmod" and tm and tm.diagnostics_text then
-            fm.preview = tm.diagnostics_text()
-            fm.status = "Trusted backend diagnostics shown."
+        if storage.diagnostics_text then
+            fm.preview = storage.diagnostics_text(name, ide_session)
+            fm.status = "Backend diagnostics shown."
         else
-            fm.preview = "Backend: " .. tostring(storage.status(ide_session)) .. "\nNo trusted diagnostics for this backend."
+            fm.preview = "Backend: " .. tostring(storage.status(ide_session)) .. "\nNo runtime diagnostics for this backend."
             fm.status = "Backend diagnostics shown."
         end
         M.show(name, ide_session)

@@ -109,10 +109,10 @@ Important current log findings:
   `Invalid tooltip element(3): 'trace_prompt_log;Writes full request bodies ...'`.
   This points to an unescaped or too-long/multiline tooltip in
   `gui/config_gui.lua`.
-- Earlier startup logs showed undeclared global accesses in runtime storage modules:
-  `path_policy` and `storage_backends` from
-  `runtime/storage/runtime_scripts.lua` and `runtime/storage/trusted_mods.lua`.
-  The small fix is to use `rawget(_G, ...)` for fallback global reads.
+- Runtime storage now uses the world-backed `runtime/ide_storage.lua` service.
+  The legacy `runtime/storage/*` backend split was removed for Luanti 5.16+ compatibility.
+  Keep dependency access explicit through `_G.llm_connect.path_policy` and avoid reintroducing
+  global storage backend registries.
 - A previous WorldEdit agent run failed first because `player_name` was nil
   inside the generated action, then failed because the model called nonexistent
   `llm_connect.skills.worldedit_agent.set_nodes`.
@@ -288,25 +288,25 @@ Files:
 
 - `gui/config_gui.lua`
 
-### 3. Fix Runtime Storage Global Warnings
+### 3. Keep Runtime Storage World-Backed
 
-Problem:
+Current state:
 
-- Earlier startup logs showed undeclared global access for `path_policy` and
-  `storage_backends` inside storage modules.
+- IDE persistence is handled by `runtime/ide_storage.lua`.
+- Scripts are stored under `world/llm_scripts/<player>/scripts/`.
+- Legacy `runtime/storage/*` backends and trusted-mod persistence are removed.
 
 Implementation target:
 
-- Inspect `runtime/storage/runtime_scripts.lua` and
-  `runtime/storage/trusted_mods.lua`.
-- Bind dependencies from `_G.llm_connect.path_policy`,
-  `_G.llm_connect.storage_backends`, or explicit globals consistently.
+- Do not reintroduce `storage_backends`, `runtime_scripts.lua`, `trusted_mods.lua`,
+  or `core.request_insecure_environment()`.
+- Bind dependencies from `_G.llm_connect.path_policy` or explicit locals consistently.
 - Keep load order in `init.lua` intact unless a clear dependency issue is found.
 
 Files:
 
-- `runtime/storage/runtime_scripts.lua`
-- `runtime/storage/trusted_mods.lua`
+- `runtime/ide_storage.lua`
+- `runtime/path_policy.lua`
 - `init.lua`
 
 ### 4. Make WorldEdit Skill Use Harder to Mis-Prompt

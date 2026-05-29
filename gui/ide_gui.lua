@@ -16,110 +16,6 @@ local core = core
 local M    = {}
 
 -- ===========================================================================
--- File Storage
--- ===========================================================================
-
-local SNIPPETS_DIR = (core.get_worldpath or minetest.get_worldpath)() .. "/" .. "llm_snippets"
-local MKDIR_FN     = core.mkdir or minetest.mkdir
-
-if MKDIR_FN then
-    MKDIR_FN(SNIPPETS_DIR)
-else
-    core.log("warning", "[ide_gui] mkdir not available – snippets dir may not exist")
-end
-
-core.log("action", "[ide_gui] snippets dir: " .. SNIPPETS_DIR)
-
-local function ensure_snippets_dir()
-    return SNIPPETS_DIR
-end
-
-local INDEX_PATH = SNIPPETS_DIR .. "/_index.txt"
-
-local function read_index()
-    local f = io.open(INDEX_PATH, "r")
-    if not f then return {} end
-    local files = {}
-    for line in f:lines() do
-        line = line:match("^%s*(.-)%s*$")
-        if line ~= "" then table.insert(files, line) end
-    end
-    f:close()
-    table.sort(files)
-    return files
-end
-
-local function write_index(files)
-    local sorted = {}
-    for _, v in ipairs(files) do table.insert(sorted, v) end
-    table.sort(sorted)
-    local seen, deduped = {}, {}
-    for _, v in ipairs(sorted) do
-        if not seen[v] then seen[v] = true; table.insert(deduped, v) end
-    end
-    return core.safe_file_write(INDEX_PATH, table.concat(deduped, "\n"))
-end
-
-local function index_add(filename)
-    local files = read_index()
-    for _, v in ipairs(files) do if v == filename then return end end
-    table.insert(files, filename)
-    write_index(files)
-end
-
-local function index_remove(filename)
-    local files, new = read_index(), {}
-    for _, v in ipairs(files) do if v ~= filename then table.insert(new, v) end end
-    write_index(new)
-end
-
-local migration_done = false
-local function maybe_migrate()
-    if migration_done then return end
-    migration_done = true
-    local idx = read_index()
-    if #idx > 0 then return end
-    local dir = ensure_snippets_dir()
-    local candidates = {"untitled.lua","colorstones.lua","test.lua","init.lua","startup.lua"}
-    local found = {}
-    for _, name in ipairs(candidates) do
-        local f = io.open(dir .. "/" .. name, "r")
-        if f then f:close(); table.insert(found, name) end
-    end
-    if #found > 0 then
-        write_index(found)
-        core.log("action", "[ide_gui] migration: added " .. #found .. " existing snippets to index")
-    end
-end
-
-local function list_snippet_files()
-    maybe_migrate()
-    return read_index()
-end
-
-local function read_file(filepath)
-    local f, err = io.open(filepath, "r")
-    if not f then
-        core.log("warning", "[ide_gui] read_file failed: " .. tostring(filepath) .. " – " .. tostring(err))
-        return nil, err
-    end
-    local content = f:read("*a")
-    f:close()
-    return content
-end
-
-local function write_file(filepath, content)
-    local ok = core.safe_file_write(filepath, content)
-    if not ok then
-        local f, err = io.open(filepath, "w")
-        if not f then return false, err end
-        f:write(content)
-        f:close()
-    end
-    return true
-end
-
--- ===========================================================================
 -- Module helpers
 -- ===========================================================================
 
@@ -156,7 +52,8 @@ local function get_executor()
 end
 
 local function get_storage()
-    return _G.ide_storage or unavailable_storage
+    local root = _G.llm_connect
+    return (root and root.ide_storage) or (root and root.runtime and root.runtime.ide_storage) or _G.ide_storage or unavailable_storage
 end
 
 local function get_api()
@@ -222,8 +119,7 @@ local function get_session(name)
             api_level        = nil,
             last_run_output  = nil,
             run_failed       = false,
-            persist_backend  = "llm_runtime",
-            active_modname   = "llm_live_mod",
+            persist_backend  = "in_runtime",
             current_dir      = "",
         }
         sessions[name].file_list = get_storage().list(name, sessions[name])
@@ -319,7 +215,7 @@ function M.show(name)
     table.insert(fs, "label[" .. 7.4 .. "," .. (HEADER_H/2 - 0.15) .. ";Backend: " .. core.formspec_escape(backend_label) .. "]")
     if storage.can_switch_backend(name) then
         table.insert(fs, "button[" .. 12.7 .. ",0.08;1.7,0.65;backend_switch;Switch]")
-        table.insert(fs, "tooltip[backend_switch;Switch persistence backend: LLM Runtime <-> Trusted Worldmod]")
+        table.insert(fs, "tooltip[backend_switch;Runtime backend is world-backed; backend switching is disabled unless a future backend is added]")
     end
     table.insert(fs, "label[" .. (W - 6.2) .. "," .. (HEADER_H/2 - 0.15) .. ";" .. os.date("%H:%M") .. "]")
     table.insert(fs, "style[close_ide;bgcolor=#3a1a1a;textcolor=#ffaaaa]")
@@ -624,9 +520,9 @@ function M.handle_fields(name, formname, fields)
         if ok then
             session.output        = "✓ Saved: " .. tostring(rel_or_err)
                 .. "\nBackend: " .. get_storage().status(session)
-            local rt = _G.runtime_scripts or (_G.llm_connect and _G.llm_connect.runtime_scripts)
-            if rt and rt.format_class_summary and classification then
-                session.output = session.output .. "\n\n" .. rt.format_class_summary(classification)
+            local cc = _G.code_classifier or (_G.llm_connect and _G.llm_connect.code_classifier)
+            if cc and cc.format_summary and classification then
+                session.output = session.output .. "\n\n" .. cc.format_summary(classification)
             end
             session.last_modified = os.time()
             session.file_list     = get_storage().list(name, session)
@@ -855,8 +751,8 @@ function M.hot_reload(name)
     M.show(name)
 
     local res = storage.hot_reload(name, session, session.code)
-    local rt = _G.runtime_scripts or (_G.llm_connect and _G.llm_connect.runtime_scripts)
-    local summary = (rt and rt.format_class_summary and res.classification) and ("\n\n" .. rt.format_class_summary(res.classification)) or ""
+    local cc = _G.code_classifier or (_G.llm_connect and _G.llm_connect.code_classifier)
+    local summary = (cc and cc.format_summary and res.classification) and ("\n\n" .. cc.format_summary(res.classification)) or ""
 
     if res.success or res.saved then
         local out = "✓ Saved: " .. tostring(res.relpath or session.filename)

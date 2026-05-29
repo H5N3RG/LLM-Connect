@@ -85,7 +85,6 @@ local function load_gui_module(name, filename, required)
 end
 
 -- Deterministic dependency order. IDE helpers first, main/config last.
-M.ide_storage        = load_gui_module("ide_storage", "ide_storage.lua", false)
 M.code_executor      = load_gui_module("code_executor", "code_executor.lua", false)
 M.ide_asset_picker   = load_gui_module("ide_asset_picker", "ide_asset_picker.lua", false)
 M.ide_file_manager   = load_gui_module("ide_file_manager", "ide_file_manager.lua", false)
@@ -105,7 +104,7 @@ end
 
 function M.status()
     local out = {}
-    for _, name in ipairs({"main_gui", "config_gui", "ide_gui", "ide_storage", "code_executor", "ide_asset_picker", "ide_file_manager", "ide_system_prompts"}) do
+    for _, name in ipairs({"main_gui", "config_gui", "ide_gui", "code_executor", "ide_asset_picker", "ide_file_manager", "ide_system_prompts"}) do
         local module = M[name]
         out[name] = {
             ok = type(module) == "table" and not module.__unavailable,
@@ -149,7 +148,6 @@ _G.llm_connect.gui = M
 
 -- Legacy globals kept for old GUI modules and external debug snippets. They may
 -- point at fallback modules, but they are never nil after gui_init completes.
-_G.ide_storage = M.ide_storage
 _G.code_executor = M.code_executor
 _G.ide_asset_picker = M.ide_asset_picker
 _G.ide_file_manager = M.ide_file_manager

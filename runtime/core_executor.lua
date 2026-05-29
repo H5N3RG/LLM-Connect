@@ -37,8 +37,8 @@ local function live_emit(category, player_name, message, data)
     end
 end
 
-local function get_runtime_scripts()
-    return _G.runtime_scripts or (_G.llm_connect and _G.llm_connect.runtime_scripts)
+local function get_code_classifier()
+    return _G.code_classifier or (_G.llm_connect and _G.llm_connect.code_classifier)
 end
 
 local function player_has_priv(name, priv)
@@ -525,10 +525,10 @@ function M.execute(player_name, code, options)
         options.allow_startup_execution = true
     end
 
-    local runtime_scripts = get_runtime_scripts()
-    local classification = runtime_scripts and runtime_scripts.classify
-        and runtime_scripts.classify(code, {mode = options.mode or "llm_runtime", modname = options.modname})
-        or {class = "unknown", hot_reloadable = false, persistable = false, issues = {"runtime_scripts classifier unavailable"}}
+    local code_classifier = get_code_classifier()
+    local classification = code_classifier and code_classifier.classify
+        and code_classifier.classify(code, {mode = options.mode or "in_runtime", modname = options.modname})
+        or {class = "unknown", hot_reloadable = false, persistable = false, issues = {"code_classifier unavailable"}}
     result.classification = classification
     result.script_class = classification.class
     result.hot_reloadable = classification.hot_reloadable
@@ -668,8 +668,8 @@ function M.execute(player_name, code, options)
     end
 
     if classification and classification.class and classification.class ~= "runtime_safe" then
-        local summary = "\n\n" .. (runtime_scripts and runtime_scripts.format_class_summary
-            and runtime_scripts.format_class_summary(classification)
+        local summary = "\n\n" .. (code_classifier and code_classifier.format_summary
+            and code_classifier.format_summary(classification)
             or ("Class: " .. tostring(classification.class)))
         result.output = (result.output or "") .. summary
     end

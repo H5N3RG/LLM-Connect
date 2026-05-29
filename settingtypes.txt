@@ -111,11 +111,6 @@ llm_ide_auto_save              (DEPRECATED: Auto-save code buffer on changes) bo
 # sandboxed; llm_root behavior is controlled by the root settings above.
 llm_ide_whitelist_enabled      (Scope llm_dev to sandboxed execution)         bool  true
 
-# Enables the root-only Trusted Worldmod persistence backend switch in the IDE.
-# Requires llm_connect in secure.trusted_mods when mod security is enabled.
-# v1 supports Save + Validate semantics only; standalone worldmod hot reload is disabled.
-llm_ide_trusted_worldmod_backend (Enable Trusted Worldmod backend switch)      bool  true
-
 # Deprecated / not implemented in the current Lua-first IDE.
 llm_ide_live_suggestions       (DEPRECATED: Live AI suggestions while typing) bool  false
 

@@ -97,3 +97,8 @@ local_config.lua
 site/
 dist/
 build/
+
+TASK.md
+ISSUES.md
+
+tests/

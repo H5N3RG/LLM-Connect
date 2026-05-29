@@ -7,7 +7,7 @@ Implemented the first concrete IDE hot-reload/persistence layer:
 
 - Added `runtime_scripts.lua` as the default `world/llm_scripts/<player>/` backend.
 - Added `smart_lua_ide/ide_storage.lua` as a thin persistence backend bridge.
-- Added `trusted_mods.lua` as a conservative root-only Trusted Worldmod backend slot.
+- Historical note: `trusted_mods.lua` existed as a conservative root-only Trusted Worldmod backend slot; it has since been removed for Luanti 5.16+ compatibility.
 - Added root-only IDE backend switch: `LLM Runtime` ⇄ `Trusted Worldmod`.
 - Added a small `Files...` subformspec instead of introducing a second IDE UI.
 - Added IDE `Hot Reload` action:

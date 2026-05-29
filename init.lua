@@ -15,13 +15,11 @@
 --       └ registry.load_internal()     → load built-in skills after context exists
 --    8. runtime/execution_policy.lua — central root/dev execution policy
 --    9. runtime/path_policy.lua — stack-relative filesystem roots
---   10. runtime/storage/storage_backends.lua — filesystem helper layer
---   11. runtime/storage/runtime_scripts.lua — IDE persistence + hot-reload backend
---   12. runtime/storage/trusted_mods.lua — root-only trusted worldmod backend
---   13. runtime/core_executor.lua — Shared Lua Runtime Backend
+--   10. runtime/code_classifier.lua — path-neutral code classification metadata
+--   11. runtime/ide_storage.lua — world-backed IDE persistence + hot-reload service
+--   12. runtime/core_executor.lua — Shared Lua Runtime Backend
 --   14. agent/agent_runtime.lua — Agent-Orchestrator
 --   15. gui/       — first-class frontend, loaded directly
---       └ ide_storage.lua    — backend bridge for IDE persistence
 --       └ code_executor.lua  — legacy shim to core_executor
 --       └ ide_asset_picker.lua
 --       └ ide_file_manager.lua
@@ -43,13 +41,16 @@ local AGENT_DIR = mod_dir .. "/agent"
 local API_DIR   = mod_dir .. "/api"
 local CONTEXT_DIR = mod_dir .. "/context"
 local RUNTIME_DIR = mod_dir .. "/runtime"
-local STORAGE_DIR = RUNTIME_DIR .. "/storage"
 local SKILLS_DIR = mod_dir .. "/skills"
 local GUI_DIR   = mod_dir .. "/gui"
 
 _G.llm_connect = rawget(_G, "llm_connect") or {}
 _G.llm_connect.version = _G.llm_connect.version or "1.2.0-dev"
 _G.llm_connect.protocol = _G.llm_connect.protocol or "lua-first"
+
+-- Luanti 5.16+ no longer permits mod-directory persistence.
+-- LLM-Connect intentionally does not request an insecure environment; runtime
+-- persistence is world-backed via core.get_worldpath().
 
 -- Subsystem health / degraded-mode registry. Loaded before all subsystem
 -- loaders so failures can be reported instead of turning into nil crashes.
@@ -246,15 +247,13 @@ local runtime_modules = load_module(RUNTIME_DIR .. "/runtime_init.lua", "runtime
 require_method(runtime_modules, "execute", "runtime")
 local execution_policy = runtime_modules.execution_policy
 local path_policy = runtime_modules.path_policy
-local storage_backends = runtime_modules.storage_backends
-local runtime_scripts = runtime_modules.runtime_scripts
-local trusted_mods = runtime_modules.trusted_mods
+local code_classifier = runtime_modules.code_classifier
+local ide_storage = runtime_modules.ide_storage
 local core_executor = runtime_modules.core_executor
 _G.execution_policy = execution_policy
 _G.path_policy = path_policy
-_G.storage_backends = storage_backends
-_G.runtime_scripts = runtime_scripts
-_G.trusted_mods = trusted_mods
+_G.code_classifier = code_classifier
+_G.ide_storage = ide_storage
 _G.core_executor = core_executor
 
 -- ===========================================================================
@@ -553,8 +552,8 @@ load_startup_code()
 
 -- Runtime-script after-load hook (controlled dofile()/loadstring path).
 core.after(0, function()
-    if runtime_scripts and runtime_scripts.load_enabled_after_start then
-        local count = runtime_scripts.load_enabled_after_start()
+    if ide_storage and ide_storage.load_enabled_after_start then
+        local count = ide_storage.load_enabled_after_start()
         if count and count > 0 then
             core.log("action", "[llm_connect] runtime scripts after-load executed: " .. tostring(count))
         end

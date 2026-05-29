@@ -74,9 +74,8 @@ Provides:
 
 ## 🔄 IDE Persistence / Hot-Reload
 
-The Smart Lua IDE uses a storage bridge:
-- Default backend: `world/llm_scripts/<player>/` via `runtime_scripts.lua`
-- Root-only backend: trusted worldmods via `trusted_mods.lua`
+The Smart Lua IDE uses the flat runtime storage service:
+- Single backend: `world/llm_scripts/<player>/scripts/`
 - `Run`: Transient execution
 - `Save`: Manual persistence through active backend
 - `Hot Reload`: Saves and executes runtime-safe scripts
