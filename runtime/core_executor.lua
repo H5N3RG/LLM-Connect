@@ -528,10 +528,9 @@ function M.execute(player_name, code, options)
     local code_classifier = get_code_classifier()
     local classification = code_classifier and code_classifier.classify
         and code_classifier.classify(code, {mode = options.mode or "in_runtime", modname = options.modname})
-        or {class = "unknown", hot_reloadable = false, persistable = false, issues = {"code_classifier unavailable"}}
+        or {class = "unknown", persistable = false, issues = {"code_classifier unavailable"}}
     result.classification = classification
     result.script_class = classification.class
-    result.hot_reloadable = classification.hot_reloadable
     result.requires_restart = classification.requires_restart
 
     if classification.class == "dangerous" and options.allow_dangerous ~= true then

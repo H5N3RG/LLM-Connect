@@ -28,7 +28,6 @@ local unavailable_storage = {
     read = function() return nil, "storage unavailable" end,
     read_path = function() return nil, "storage unavailable" end,
     save = function() return false, "storage unavailable" end,
-    hot_reload = function() return { ok = false, success = false, message = "storage unavailable", error = "storage unavailable" } end,
     delete = function() return false, "storage unavailable" end,
 }
 
@@ -240,10 +239,6 @@ function M.show(name)
     add_btn("analyze", "Analyze",  "AI: find logic & API issues", true)
     add_btn("explain", "Explain",  "AI: explain the code in plain language", true)
     add_btn("run",     "▶ Run",    can_execute(name) and (((get_execution_ctx(name) or {}).execution_mode == "unrestricted") and "Execute unrestricted (root)" or "Execute in sandbox") or "Needs llm_dev", can_execute(name))
-    if is_root(name) and core.settings:get_bool("llm_ide_hot_reload", true) then
-        table.insert(fs, "style[hot_reload;bgcolor=#4a3a1a;textcolor=#ffeeaa]")
-        add_btn("hot_reload", "↻ Reload", "Save through active backend and hot-reload if runtime-safe", true)
-    end
 
     if session.run_failed then
         table.insert(fs, "style[auto_fix;bgcolor=#3a1a00;textcolor=#ffcc44]")
@@ -520,6 +515,7 @@ function M.handle_fields(name, formname, fields)
         if ok then
             session.output        = "✓ Saved: " .. tostring(rel_or_err)
                 .. "\nBackend: " .. get_storage().status(session)
+                .. "\nCold reload: active after server/world restart."
             local cc = _G.code_classifier or (_G.llm_connect and _G.llm_connect.code_classifier)
             if cc and cc.format_summary and classification then
                 session.output = session.output .. "\n\n" .. cc.format_summary(classification)
@@ -551,9 +547,6 @@ function M.handle_fields(name, formname, fields)
 
     elseif fields.run and can_execute(name) then
         M.run_code(name); return true
-
-    elseif fields.hot_reload and is_root(name) and core.settings:get_bool("llm_ide_hot_reload", true) then
-        M.hot_reload(name); return true
 
     elseif fields.auto_fix and can_execute(name) then
         M.auto_fix(name); return true
@@ -742,37 +735,6 @@ function M.run_code(name)
     M.show(name)
 end
 
-
-function M.hot_reload(name)
-    local session = get_session(name)
-    local storage = get_storage()
-    storage.ensure_session(session)
-    session.output = "Saving + hot-reloading…"
-    M.show(name)
-
-    local res = storage.hot_reload(name, session, session.code)
-    local cc = _G.code_classifier or (_G.llm_connect and _G.llm_connect.code_classifier)
-    local summary = (cc and cc.format_summary and res.classification) and ("\n\n" .. cc.format_summary(res.classification)) or ""
-
-    if res.success or res.saved then
-        local out = "✓ Saved: " .. tostring(res.relpath or session.filename)
-        if res.reloaded then
-            out = out .. "\n✓ Hot reload executed."
-            if res.output and res.output ~= "" then out = out .. "\n\nOutput:\n" .. res.output end
-        else
-            out = out .. "\n⚠ Not hot-reloaded: " .. tostring(res.message or res.error or "not runtime-safe")
-        end
-        session.output = out .. summary
-        session.last_modified = os.time()
-        session.file_list = storage.list(name, session)
-        session.last_run_output = session.output
-        session.run_failed = false
-    else
-        session.output = "✗ Hot reload failed:\n" .. tostring(res.error or "Unknown error") .. summary
-        session.run_failed = true
-    end
-    M.show(name)
-end
 
 function M.auto_fix(name)
     local session  = get_session(name)

@@ -385,34 +385,36 @@ Related subsystem/files:
 - `runtime/core_executor.lua`
 - `runtime/runtime_init.lua`
 
-## 12. Startup Script Reload
+## 12. Cold Reload Startup Load
 
 Required config/settings:
 
 - Player has `llm_root`.
-- A world file `llm_startup.lua` may or may not exist.
+- One or more IDE-saved `*.lua` scripts may exist under
+  `world/llm_scripts/<player>/scripts/`.
 
 In-game action:
 
 ```text
-/llm_startup_reload
+Save a script in the IDE, then restart the server/world.
 ```
 
 Expected trace/log evidence:
 
-- If no file exists, chat says no startup file was found.
-- If a file exists, root-only policy applies and execution is logged.
+- The storage root is bootstrapped under the active world path.
+- Each saved `*.lua` script is logged as loaded, or logged with its failure.
+- A failed persisted script does not abort mod initialization.
 
 What failure means:
 
-- Startup file path policy is wrong, root check is wrong, or startup execution
-  setting behavior regressed.
+- World-backed storage path policy, startup directory listing, or deterministic
+  cold-reload execution regressed.
 
 Related subsystem/files:
 
 - `init.lua`
 - `runtime/path_policy.lua`
-- `runtime/core_executor.lua`
+- `runtime/ide_storage.lua`
 - `runtime/execution_policy.lua`
 
 ## 13. Runtime Agent Time Change

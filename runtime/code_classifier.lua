@@ -1,8 +1,8 @@
 -- ===========================================================================
 --  code_classifier.lua - IDE/runtime code classification metadata
 --
---  Classification is advisory metadata only. It may block execution or hot
---  reload through callers, but it must never change filesystem paths.
+--  Classification is advisory metadata only. It may block execution through
+--  callers, but it must never change filesystem paths.
 -- ===========================================================================
 
 local M = {}
@@ -60,7 +60,6 @@ function M.classify(code, context)
     local result = {
         class = "runtime_safe",
         mode = mode,
-        hot_reloadable = true,
         persistable = true,
         requires_restart = false,
         sticky = false,
@@ -73,7 +72,6 @@ function M.classify(code, context)
     local dangerous_hits = collect_hits(code, DANGEROUS_PATTERNS)
     if #dangerous_hits > 0 then
         result.class = "dangerous"
-        result.hot_reloadable = false
         result.persistable = false
         result.dangerous = true
         result.hits = dangerous_hits
@@ -102,12 +100,10 @@ function M.classify(code, context)
 
     if #startup_hits > 0 then
         result.class = "startup_preferred"
-        result.hot_reloadable = false
         result.requires_restart = true
         result.hits = startup_hits
     elseif #sticky_hits > 0 then
         result.class = "sticky_runtime"
-        result.hot_reloadable = false
         result.sticky = true
         result.hits = sticky_hits
         result.issues[#result.issues + 1] = "Sticky runtime registration may duplicate callbacks on reload."
@@ -119,7 +115,7 @@ end
 function M.format_summary(classification)
     classification = classification or {class = "unknown"}
     local parts = {"Class: " .. tostring(classification.class)}
-    parts[#parts + 1] = "Hot reload: " .. (classification.hot_reloadable and "yes" or "no")
+    parts[#parts + 1] = "Cold reload: saved scripts load on server/world restart"
     if classification.requires_restart then parts[#parts + 1] = "Restart: recommended" end
     if classification.sticky then parts[#parts + 1] = "Sticky: yes" end
     if classification.issues and #classification.issues > 0 then

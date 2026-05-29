@@ -16,7 +16,7 @@
 --    8. runtime/execution_policy.lua — central root/dev execution policy
 --    9. runtime/path_policy.lua — stack-relative filesystem roots
 --   10. runtime/code_classifier.lua — path-neutral code classification metadata
---   11. runtime/ide_storage.lua — world-backed IDE persistence + hot-reload service
+--   11. runtime/ide_storage.lua — world-backed IDE persistence + cold-reload loader
 --   12. runtime/core_executor.lua — Shared Lua Runtime Backend
 --   14. agent/agent_runtime.lua — Agent-Orchestrator
 --   15. gui/       — first-class frontend, loaded directly
@@ -31,7 +31,7 @@
 --                                         already self-registered as Luanti mods
 --   11. Main GUI and config GUI
 --   12. Register formspec handlers
---   13. Load llm_startup.lua if present
+--   13. Load llm_startup.lua and world-backed IDE scripts if present
 --
 -- ===========================================================================
 
@@ -456,32 +456,7 @@ core.register_chatcommand("llm_skill_attach", {
     end,
 })
 
--- Manually reload startup code (llm_root)
 local startup_file = (_G.llm_connect and _G.llm_connect.path_policy and _G.llm_connect.path_policy.startup_file()) or (core.get_worldpath() .. "/llm_startup.lua")
-
-core.register_chatcommand("llm_startup_reload", {
-    description = "Re-execute llm_startup.lua at runtime (new registrations will fail — restart required)",
-    privs       = { llm_root = true },
-    func = function(name, _)
-        local f = io.open(startup_file, "r")
-        if not f then
-            core.chat_send_player(name, "[LLM] ✗ No llm_startup.lua found")
-            return false, "file not found"
-        end
-        f:close()
-        core.log("action", "[llm_connect] startup code manually reloaded by " .. name)
-        core.chat_send_player(name,
-            "[LLM] ⚠ Running startup code — new registrations will fail!")
-        local ok, err = pcall(dofile, startup_file)
-        if ok then
-            core.chat_send_player(name, "[LLM] ✓ Executed (restart for registrations to take effect)")
-            return true
-        else
-            core.chat_send_player(name, "[LLM] ✗ Error: " .. tostring(err))
-            return false, tostring(err)
-        end
-    end,
-})
 
 -- ===========================================================================
 -- 12. Central formspec handler
@@ -534,7 +509,7 @@ core.register_on_player_receive_fields(function(player, formname, fields)
 end)
 
 -- ===========================================================================
--- 13. Load startup code (llm_startup.lua in world directory)
+-- 13. Load startup code (llm_startup.lua and world-backed IDE scripts)
 -- ===========================================================================
 
 local function load_startup_code()
@@ -550,15 +525,14 @@ end
 
 load_startup_code()
 
--- Runtime-script after-load hook (controlled dofile()/loadstring path).
-core.after(0, function()
-    if ide_storage and ide_storage.load_enabled_after_start then
-        local count = ide_storage.load_enabled_after_start()
-        if count and count > 0 then
-            core.log("action", "[llm_connect] runtime scripts after-load executed: " .. tostring(count))
-        end
+if ide_storage and ide_storage.load_cold_reload_scripts then
+    local count, err = ide_storage.load_cold_reload_scripts()
+    if count and count > 0 then
+        core.log("action", "[llm_connect] cold reload scripts loaded: " .. tostring(count))
+    elseif err then
+        core.log("warning", "[llm_connect] cold reload skipped: " .. tostring(err))
     end
-end)
+end
 
 -- ===========================================================================
 

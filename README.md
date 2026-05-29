@@ -72,13 +72,13 @@ Provides:
 - `command_agent` - Executes chat commands
 - `worldedit_agent` - WorldEdit building operations with high-level primitives
 
-## 🔄 IDE Persistence / Hot-Reload
+## 🔄 IDE Persistence / Cold Reload
 
 The Smart Lua IDE uses the flat runtime storage service:
 - Single backend: `world/llm_scripts/<player>/scripts/`
 - `Run`: Transient execution
-- `Save`: Manual persistence through active backend
-- `Hot Reload`: Saves and executes runtime-safe scripts
+- `Save`: Manual persistence into world-backed storage
+- Cold reload: saved `*.lua` scripts are loaded deterministically on the next server/world start
 
 ## 📚 Documentation
 
@@ -97,7 +97,6 @@ Detailed developer documentation is available in the [`docs/dev/`](docs/dev/) di
 - `/llm_skill_attach` - Attach/detach skills for a player (root)
 - `/llm_trace` - Open live trace panel (root)
 - `/llm_config_reload` - Reload configuration without restart
-- `/llm_startup_reload` - Re-execute llm_startup.lua at runtime
 
 ## 🔐 Privileges
 

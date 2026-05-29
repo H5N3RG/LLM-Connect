@@ -97,11 +97,8 @@ llm_live_trace_categories (Live trace categories, comma-separated or all) string
 
 # === Smart Lua IDE ===
 
-# Enables the IDE Hot Reload button for root users.
-# v1 hot reload saves through the active IDE storage backend, then executes only
-# runtime-safe llm_scripts. Startup-preferred registrations are saved but not
-# live-reloaded; restart remains the supported activation path.
-llm_ide_hot_reload             (Enable IDE hot-reload button)                 bool  true
+# IDE Save writes to <worldpath>/llm_scripts/<player>/scripts/.
+# Saved *.lua files are cold-loaded on the next server/world start.
 
 # Deprecated / not implemented in the current Lua-first IDE.
 # Kept only so old minetest.conf entries remain documented.

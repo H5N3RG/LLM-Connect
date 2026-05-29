@@ -5,7 +5,8 @@
 --  keeps generated/runtime code strictly in the active world directory:
 --      <worldpath>/llm_scripts/<player>/scripts
 --
---  This module owns persistence only. Execution stays delegated to core_executor.
+--  This module owns IDE persistence and cold-reload startup loading.
+--  Transient execution stays delegated to core_executor.
 -- ===========================================================================
 
 local core = core
@@ -75,7 +76,8 @@ local function stack_path(root_path, relpath)
     local clean, err = normalize_rel(relpath or "")
     if not clean then return nil, err end
     if clean == "" then return root_path end
-    return join(root_path, clean:gsub("/", sep))
+    local stacked = clean:gsub("/", sep)
+    return join(root_path, stacked)
 end
 
 local function safe_player_name(player_name)
@@ -106,41 +108,71 @@ end
 local function classify(code, context)
     local c = classifier or (_G.llm_connect and _G.llm_connect.code_classifier)
     if c and c.classify then return c.classify(code, context) end
-    return {class = "unknown", hot_reloadable = false, persistable = true, issues = {"code_classifier unavailable"}}
+    return {class = "unknown", persistable = true, issues = {"code_classifier unavailable"}}
 end
 
 local function read_file(path)
     if not io or not io.open then return nil, "read API unavailable" end
-    local ok, content = pcall(function()
+    local ok, content, err = pcall(function()
         local f, err = io.open(path, "rb")
         if not f then return nil, err end
         local data = f:read("*a")
         f:close()
         return data
     end)
-    if ok then return content end
+    if ok then return content, err end
     return nil, tostring(content)
 end
 
 local function write_file(path, content)
     if not io or not io.open then return false, "write API unavailable" end
-    local ok, result = pcall(function()
+    local ok, result, err = pcall(function()
         local f, err = io.open(path, "wb")
         if not f then return false, err end
-        f:write(tostring(content or ""))
-        f:close()
+        local written, write_err = f:write(tostring(content or ""))
+        local closed, close_err = f:close()
+        if not written then return false, write_err end
+        if not closed then return false, close_err end
         return true
     end)
-    if ok then return result == true, result == true and nil or tostring(result) end
+    if ok then return result == true, result == true and nil or tostring(err or result) end
     return false, tostring(result)
 end
 
-local function mkdir_one(path)
-    if core.mkdir then
-        local ok, result = pcall(core.mkdir, path)
-        if ok and result ~= false then return true end
+local function get_dir_list(path, is_dir)
+    if not core.get_dir_list then return nil, "core.get_dir_list unavailable" end
+    local ok, result = pcall(core.get_dir_list, path, is_dir)
+    if ok then return result end
+    return nil, tostring(result)
+end
+
+local function dir_exists(path)
+    local dirs = get_dir_list(path, true)
+    return type(dirs) == "table"
+end
+
+local function path_exists(path)
+    if core.path_exists then
+        local ok, exists = pcall(core.path_exists, path)
+        if ok then return exists == true end
     end
-    return false, "mkdir failed: " .. tostring(path)
+    local dirs = get_dir_list(path, true)
+    local files = get_dir_list(path, false)
+    return type(dirs) == "table" or type(files) == "table"
+end
+
+local function mkdir_one(path)
+    if dir_exists(path) then return true end
+    if core.mkdir then
+        local ok, result, err = pcall(core.mkdir, path)
+        if ok and result ~= false and dir_exists(path) then return true end
+        if dir_exists(path) then return true end
+        if ok then
+            return false, "mkdir failed for " .. tostring(path) .. ": " .. tostring(err or result or "unknown error")
+        end
+        return false, "mkdir failed for " .. tostring(path) .. ": " .. tostring(result)
+    end
+    return false, "mkdir unavailable for " .. tostring(path)
 end
 
 local function mkdir_tree(root_path, relpath)
@@ -155,23 +187,6 @@ local function mkdir_tree(root_path, relpath)
         if not ok then return false, mk_err end
     end
     return true
-end
-
-local function get_dir_list(path, is_dir)
-    if not core.get_dir_list then return nil, "core.get_dir_list unavailable" end
-    local ok, result = pcall(core.get_dir_list, path, is_dir)
-    if ok then return result end
-    return nil, tostring(result)
-end
-
-local function path_exists(path)
-    if core.path_exists then
-        local ok, exists = pcall(core.path_exists, path)
-        if ok then return exists == true end
-    end
-    local dirs = get_dir_list(path, true)
-    local files = get_dir_list(path, false)
-    return type(dirs) == "table" or type(files) == "table"
 end
 
 local function list_dir_physical(_player_name, root_path, relpath)
@@ -221,6 +236,12 @@ local function runtime_base(player_name)
     return base and join(base, safe_player_name(player_name), "scripts") or nil
 end
 
+local function ensure_storage_root()
+    local base = storage_root()
+    if not base then return false, "world path unavailable" end
+    return mkdir_one(base)
+end
+
 local function ensure_runtime_root(player_name)
     local base = storage_root()
     if not base then return false, "world path unavailable" end
@@ -230,30 +251,6 @@ local function ensure_runtime_root(player_name)
     ok, err = mkdir_one(join(base, user)); if not ok then return false, err end
     ok, err = mkdir_one(join(base, user, "scripts")); if not ok then return false, err end
     return true
-end
-
-local function runtime_enabled_index()
-    local base = storage_root()
-    return base and join(base, "_enabled.txt") or nil
-end
-
-local function add_enabled(player_name, relpath)
-    local index = runtime_enabled_index()
-    if not index then return false, "world path unavailable" end
-    local content = read_file(index) or ""
-    local entry = safe_player_name(player_name) .. "/scripts/" .. relpath
-    for line in content:gmatch("([^\n]+)") do
-        if line == entry then return true end
-    end
-    if content ~= "" and not content:match("\n$") then content = content .. "\n" end
-    return write_file(index, content .. entry .. "\n")
-end
-
-local function is_root(player_name)
-    local policy = _G.llm_connect and _G.llm_connect.policy
-    if policy and policy.is_root then return policy.is_root(player_name) end
-    local privs = core.get_player_privs(player_name) or {}
-    return privs.llm_root == true
 end
 
 function M.ensure_session(session)
@@ -314,7 +311,7 @@ function M.save_file(player_name, session, relpath, content)
     if not full then return false, path_err, class end
     local written, write_err = write_file(full, content)
     if written and session then session.filename = clean end
-    return written, write_err or clean, class
+    return written, written and clean or ("write failed for " .. tostring(full) .. ": " .. tostring(write_err)), class
 end
 
 function M.make_dir(player_name, session, relpath)
@@ -336,42 +333,6 @@ function M.delete_file(player_name, session, relpath)
     return ok == true, rm_err
 end
 
-function M.hot_reload(player_name, session, relpath, content)
-    if content == nil and session and relpath ~= nil then content = relpath; relpath = session.filename end
-    M.ensure_session(session)
-    local code = content or M.read_file(player_name, session, relpath)
-    local class = classify(code, {mode = "in_runtime"})
-    local saved, rel_or_err, saved_class = M.save_file(player_name, session, relpath, code)
-    class = saved_class or class
-    if not saved then return {ok = false, success = false, error = rel_or_err, classification = class} end
-
-    local root_reload = is_root(player_name)
-    if class.hot_reloadable ~= true and not root_reload then
-        return {ok = true, success = true, saved = true, reloaded = false, relpath = rel_or_err, classification = class, message = class.requires_restart and "Saved; restart required for registration/startup code." or "Saved; classifier blocked hot reload."}
-    end
-
-    local executor = _G.core_executor or (_G.llm_connect and _G.llm_connect.core_executor)
-    if not executor or type(executor.execute) ~= "function" then
-        return {ok = false, success = false, saved = true, reloaded = false, relpath = rel_or_err, classification = class, error = "core_executor unavailable"}
-    end
-    local run = executor.execute(player_name, code, {
-        purpose = "ide",
-        precheck = true,
-        persist = false,
-        allow_dangerous = root_reload,
-        allow_startup_execution = root_reload,
-        bypass_safety_filters = root_reload,
-        chunk_name = "=(llm_scripts/" .. tostring(rel_or_err) .. ")",
-        mode = "in_runtime",
-    })
-    run.saved = true
-    run.reloaded = run.success == true
-    run.relpath = rel_or_err
-    run.classification = class
-    if run.reloaded then add_enabled(player_name, rel_or_err) end
-    return run
-end
-
 function M.get_diagnostics(player_name, session)
     M.ensure_session(session or {})
     return {
@@ -389,28 +350,70 @@ function M.diagnostics_text(player_name, session)
     return table.concat(lines, "\n")
 end
 
-function M.load_enabled_after_start()
-    local index = runtime_enabled_index()
-    local content = index and read_file(index) or nil
-    if not content then return 0 end
-    local count = 0
-    for line in content:gmatch("([^\n]+)") do
-        local player, rel = line:match("^([^/]+)/scripts/(.+)$")
-        if player and rel then
-            local full = stack_path(runtime_base(player), rel)
-            local code = full and read_file(full) or nil
-            if code then
-                local ok, err = pcall(function()
-                    local fn, compile_err = loadstring(code, "=(llm_enabled/" .. line .. ")")
-                    if not fn then error(compile_err) end
-                    fn()
-                end)
-                if ok then count = count + 1; core.log("action", "[ide_storage] after-load executed: " .. line)
-                else core.log("error", "[ide_storage] after-load failed for " .. line .. ": " .. tostring(err)) end
+function M.bootstrap_storage()
+    local ok, err = ensure_storage_root()
+    if not ok then
+        core.log("error", "[ide_storage] storage bootstrap failed: " .. tostring(err))
+        return false, err
+    end
+    core.log("action", "[ide_storage] storage root ready: " .. tostring(storage_root()))
+    return true
+end
+
+function M.load_cold_reload_scripts()
+    local boot_ok, boot_err = M.bootstrap_storage()
+    if not boot_ok then return 0, boot_err end
+
+    local base = storage_root()
+    local players, players_err = get_dir_list(base, true)
+    if not players then
+        core.log("warning", "[ide_storage] cold reload skipped; cannot list storage root "
+            .. tostring(base) .. ": " .. tostring(players_err))
+        return 0, players_err
+    end
+    table.sort(players)
+
+    local loaded = 0
+    for _, player in ipairs(players) do
+        if player ~= "." and player ~= ".." then
+            local scripts_root = join(base, player, "scripts")
+            if path_exists(scripts_root) then
+                local files = collect_files(scripts_root, "", {})
+                table.sort(files)
+                for _, rel in ipairs(files) do
+                    if rel:match("%.lua$") then
+                        local full = stack_path(scripts_root, rel)
+                        local code, read_err
+                        if full then
+                            code, read_err = read_file(full)
+                        else
+                            read_err = "invalid script path"
+                        end
+                        local label = player .. "/scripts/" .. rel
+                        if code then
+                            local ok, err = pcall(function()
+                                local fn, compile_err = loadstring(code, "=(llm_scripts/" .. label .. ")")
+                                if not fn then error(compile_err) end
+                                fn()
+                            end)
+                            if ok then
+                                loaded = loaded + 1
+                                core.log("action", "[ide_storage] cold reload loaded: " .. label)
+                            else
+                                core.log("error", "[ide_storage] cold reload failed for " .. label .. ": " .. tostring(err))
+                            end
+                        else
+                            core.log("error", "[ide_storage] cold reload read failed for "
+                                .. label .. ": " .. tostring(read_err or "unknown error"))
+                        end
+                    end
+                end
+            else
+                core.log("action", "[ide_storage] cold reload: no scripts directory for " .. tostring(player))
             end
         end
     end
-    return count
+    return loaded
 end
 
 function M.list(player_name, session)

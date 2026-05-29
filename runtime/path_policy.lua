@@ -65,7 +65,8 @@ local function stack_path(root, rel)
     local clean, err = normalize_rel(rel or "")
     if not clean then return nil, err end
     if clean == "" then return root end
-    return join(root, clean:gsub("/", sep))
+    local stacked = clean:gsub("/", sep)
+    return join(root, stacked)
 end
 
 local function parent_dir(path)
